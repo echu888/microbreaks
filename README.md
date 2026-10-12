@@ -5,4 +5,4 @@ Take a break. A small Windows tray app that enforces the **20-20-20 eye rule** a
 - [SPEC.md](SPEC.md): what we're building and how.
 - [STATUS.md](STATUS.md): where we are and what's next.
 
-Built with Tauri 2 (Rust + TypeScript).
+Built with Tauri 2 (Rust backend, plain HTML/JS UI; no Node needed).

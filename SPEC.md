@@ -203,6 +203,9 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentSt
 
 Events are appended to `%APPDATA%\microbreaks\events.jsonl`. That's about 30 lines a day, so no database is needed.
 
+- `ts` is local wall-clock time without an offset (`2026-10-12T08:20:00`), matching the wall-clock scheduler. Ambiguous only during the repeated DST hour.
+- M1 omits `delayed_by` and only logs the outcomes `done`, `skipped`, `away` (eye breaks only) and `replaced`; the rest arrive with M2.
+
 **Break events:**
 
 ```json
@@ -297,13 +300,13 @@ control_topic = ""             # long random string
 
 ## Architecture
 
-**Stack:** Tauri 2. The Rust backend holds all logic; the overlay, settings and stats UI are a thin TypeScript layer (Vite, plain TS or Svelte).
+**Stack:** Tauri 2, Rust only toolchain (no Node/npm). The Rust backend holds all logic; the overlay, settings and stats UI are thin static HTML/CSS/plain JS pages in `ui/`, using `window.__TAURI__` (`withGlobalTauri`). Build with `cargo tauri` (`cargo install tauri-cli`). If the UI outgrows plain JS (e.g. the M4 settings window), revisit adding a bundler.
 
 ```
 microbreaks/
-  crates/core/        # pure Rust, no OS deps: config, schedule, phases, break state machine, event model
+  crates/core/        # package `microbreaks-core` (a crate named `core` collides with std). Pure Rust, no OS deps: config, schedule, phases, break state machine, event model
   src-tauri/          # Tauri app: tray, overlay windows, Win32 probes, ntfy client, autostart, log writer
-  ui/                 # overlay + settings + stats pages (web)
+  ui/                 # overlay + settings + stats pages (static web files, no build step)
 ```
 
 - **Scheduler is a tick, not timers.**

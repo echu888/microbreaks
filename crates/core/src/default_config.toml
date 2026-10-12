@@ -1,0 +1,51 @@
+[workday]
+days               = ["mon", "tue", "wed", "thu", "fri"]
+start              = "08:00"
+end                = "17:00"   # breaks continue past this until you go idle
+overtime_idle_mins = 30
+
+[eye]
+enabled        = true
+minutes        = [20, 40]      # :00 is covered by the movement break
+duration_secs  = 20
+idle_skip_secs = 20
+
+[move]
+enabled        = true
+idle_skip_secs = 120
+grace_mins     = 15
+mode           = "all"         # "all" | "rotate" (one exercise per break, cycling)
+
+[[move.exercises]]
+name = "squats"
+reps = 15
+
+# [[move.exercises]]
+# name = "pushups"
+# reps = 10
+
+[offhours]
+enabled       = false
+weekend_start = "09:00"        # non-work days are Off-hours from here; work days switch at day_end
+quiet_after   = "22:00"
+eye           = false          # eye breaks in Off-hours when active at the PC
+
+[heads_up]
+enabled = false
+secs    = 10
+
+[overlay]
+monitors       = "all"         # "all" | "active"
+opacity        = 0.85
+input_grace_ms = 1000
+
+[suppress]
+camera_mic      = true
+fullscreen      = true
+ignore_mic_apps = []           # exe names to ignore for mic detection
+
+[ntfy]
+enabled       = false
+server        = "https://ntfy.sh"
+alerts_topic  = ""             # long random string
+control_topic = ""             # long random string
