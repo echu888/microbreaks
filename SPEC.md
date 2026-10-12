@@ -36,6 +36,9 @@ Primary target is **Windows**.
 | **Sleep** | after `sleep` | none | next morning: `workday.start`, or `offhours.weekend_start` on non-work days |
 
 - **Weekends** (any non-work day) are Off-hours all day, from `weekend_start` (default 09:00) to `sleep`.
+- **Off-hours is opt-in** (`offhours.enabled`, off by default). With it off, nothing runs after the work day or on weekends, and no `sleep` events are written automatically.
+- **Exact schedule.** Off-hours breaks fire at `:00` only, after the phase starts and before `quiet_after` (the start itself does not fire, like 08:00 on a work day, so a Saturday's first break is 10:00 with the default `weekend_start`). Eye breaks fire at the eye minutes only if `offhours.eye` is on. On a work day the phase starts at `day_end`, even a manual early "Done for the day".
+- **Two kinds of sleep.** The user's **Sleep phase** (this section, event type `sleep`) is unrelated to the PC sleeping, which only produces `asleep` break outcomes.
 - **Pause** is a temporary overlay on any phase (tray "Pause for 30 min / 1 h"). It resumes automatically.
 
 ### Phase vs. presence
@@ -71,7 +74,12 @@ What the user sees is **phase + presence + next break**, e.g. "Work · next: eye
 - **Manual:**
   - A **"Going to sleep"** action button on every Off-hours phone notification (see ntfy below).
   - The same item in the tray.
-- **Backstop:** `offhours.quiet_after` (default 22:00). Reminders never run all night.
+- **Backstop:** `offhours.quiet_after` (default 22:00). Reminders never run all night. Only when Off-hours is enabled and active. `quiet_after` must be after `weekend_start` and before midnight; a value past midnight is not supported.
+- **Bedtime timestamp:** manual sleeps log the moment of the request. The auto backstop logs `quiet_after`, but never earlier than that day's `day_end` timestamp. So someone still working at 22:00 whose day ends at 22:10 logs 22:10, and a PC that slept from 21:00 to 23:00 logs 22:00, not the 23:00 wake.
+- **Wake time:** the first morning after the bedtime: `workday.start` if that day is a work day, otherwise `weekend_start`. Fri 23:00 wakes Sat 09:00; Sun 23:00 wakes Mon 08:00; Sat 01:00 wakes Sat 09:00.
+- **Manual sleep is ignored during Work, and when already asleep** (tray and phone alike). Otherwise a misclick at 14:00 would silence the rest of the day with nothing to undo it. After `day_end` it is always allowed, even with Off-hours disabled, so bedtime stats still work.
+- **Going to sleep flushes the current break** like ending the day: a showing break counts as skipped, a pending one is logged with the reason that held it.
+- **No persistence yet:** the Sleep phase, like `day_end`, lives in memory, so restarting the app brings reminders back.
 - The logged timestamp gives bedtime stats next to shutdown-time stats.
 
 ### Off-hours limitations
@@ -211,7 +219,8 @@ When enabled, a Windows toast explains why a break didn't happen, so "why didn't
   - Sent when a movement break is held for `away` or `locked` (never for `meeting` / `busy`, never for eye breaks), and only when `[ntfy]` is enabled with two valid, distinct topics (1-64 of letters, digits, `_`, `-`).
   - The message lists the exercises and the reason. It has **Done** and **Skip** buttons, priority 4, and `clear: true` so a tap removes the notification.
   - The pending break is resolved by the reply: `done` / `skipped` with `via: "phone"`, `delayed_by` set to the reason, reps equal to the targets, `shown_ms` 0. A reply for a break that is already on screen closes its overlay.
-- **Control messages:** the button body is `done:<id>` or `skip:<id>`. Anything else on the control topic is ignored.
+- **Control messages:** the button body is `done:<id>`, `skip:<id>` or `sleep:<id>`. Anything else on the control topic is ignored. `sleep` doesn't depend on the break still being active, so tapping it after resolving the break at the desktop works; it is ignored during Work or when already asleep.
+- **Off-hours pushes** are titled "Off-hours movement break" and add the "Going to sleep" button (three buttons, ntfy's maximum). Work pushes keep the plain title and two buttons.
 - **Break ids** seed from the clock at startup (epoch milliseconds), so a reply left over from an earlier run can never match a current break. A reply for any break that is no longer active is ignored.
 - **Listener:** a streaming `GET <server>/<control>/json?since=<last message id>`, starting from the startup time.
   - Only `message` events count.
@@ -269,6 +278,7 @@ Events are appended to `%APPDATA%\microbreaks\events.jsonl`. That's about 30 lin
 - `{ "ts", "type": "day_end", "auto": bool }`, where `ts` is the real shutdown time.
 - `{ "ts", "type": "day_resume" }`
 - `{ "ts", "type": "sleep", "source": "phone"|"tray"|"auto" }`
+- A break's `phase` is the phase it **started** in and does not change if it is flushed or expires later. Gap logs (`asleep`) use each slot's own phase. A break started outside the schedule (a manual "take a break" on a weekend morning, say) logs `offhours`: anything that isn't Work does.
 
 **Stats view (later):**
 
