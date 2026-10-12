@@ -2,7 +2,7 @@ use chrono::{Duration, NaiveDate, NaiveDateTime, Weekday};
 
 use crate::config::{Config, Exercise, MoveMode};
 use crate::event::{BlockReason, BreakKind, Event, Outcome};
-use crate::step::{next_break, status_line, step, Effect, Input, Presence, State};
+use crate::step::{control_body, next_break, parse_control, status_line, step, Effect, Input, Presence, State};
 
 /// 2026-10-12 is a Monday; days 17 and 18 are Sat/Sun.
 fn at(day: u32, h: u32, m: u32, s: u32) -> NaiveDateTime {
@@ -19,6 +19,7 @@ struct Sim {
     closed: usize,
     last_id: u64,
     toasts: Vec<(String, String)>,
+    pushes: Vec<(u64, String)>,
 }
 
 impl Sim {
@@ -41,6 +42,7 @@ impl Sim {
                 }
                 Effect::CloseOverlay => self.closed += 1,
                 Effect::Notify { title, body } => self.toasts.push((title, body)),
+                Effect::Push { id, message, .. } => self.pushes.push((id, message)),
                 Effect::Log(ev) => self.events.push(ev),
             }
         }
@@ -397,6 +399,143 @@ fn toast_when_a_pending_break_expires_but_not_when_dropped_eye_breaks() {
     assert_eq!(sim.toasts.len(), 1);
     assert_eq!(sim.toasts[0].0, "Movement break missed");
     assert!(sim.toasts[0].1.contains("You were away"));
+}
+
+fn phone_ready(sim: &mut Sim) {
+    sim.cfg.ntfy.enabled = true;
+    sim.cfg.ntfy.alerts_topic = "mb-alerts-test".into();
+    sim.cfg.ntfy.control_topic = "mb-control-test".into();
+}
+
+/// Movement break due at 09:00 while `p`; returns the id it was given.
+fn hold_move(sim: &mut Sim, p: Presence) -> u64 {
+    sim.tick(at(12, 8, 59, 30), 0, &[]);
+    sim.run_with(at(12, 9, 1, 0), p);
+    sim.state.next_id_for_test()
+}
+
+impl State {
+    fn next_id_for_test(&self) -> u64 {
+        self.active_id().expect("a break is active")
+    }
+}
+
+#[test]
+fn push_goes_out_when_a_movement_break_is_held_for_away_or_locked() {
+    for p in [presence(|p| p.idle_secs = 600), presence(|p| p.locked = true)] {
+        let mut sim = Sim::new();
+        phone_ready(&mut sim);
+        let id = hold_move(&mut sim, p);
+        assert_eq!(sim.pushes.len(), 1);
+        assert_eq!(sim.pushes[0].0, id);
+        assert!(sim.pushes[0].1.starts_with("squats x15."), "{}", sim.pushes[0].1);
+    }
+}
+
+#[test]
+fn no_push_for_meeting_busy_eye_or_an_unready_config() {
+    for p in [presence(|p| p.meeting = true), presence(|p| p.busy = true)] {
+        let mut sim = Sim::new();
+        phone_ready(&mut sim);
+        hold_move(&mut sim, p);
+        assert!(sim.pushes.is_empty());
+    }
+    let mut sim = Sim::new();
+    phone_ready(&mut sim);
+    sim.tick(at(12, 8, 19, 30), 0, &[]);
+    sim.run_with(at(12, 8, 21, 0), presence(|p| p.idle_secs = 600));
+    assert!(sim.pushes.is_empty(), "eye breaks never go to the phone");
+
+    for breakit in [|c: &mut Config| c.ntfy.enabled = false, |c: &mut Config| c.ntfy.control_topic.clear(),
+                    |c: &mut Config| c.ntfy.control_topic = c.ntfy.alerts_topic.clone()] {
+        let mut sim = Sim::new();
+        phone_ready(&mut sim);
+        breakit(&mut sim.cfg);
+        hold_move(&mut sim, presence(|p| p.idle_secs = 600));
+        assert!(sim.pushes.is_empty());
+    }
+}
+
+#[test]
+fn phone_done_resolves_a_pending_break_with_targets_and_the_delay() {
+    let mut sim = Sim::new();
+    phone_ready(&mut sim);
+    let id = hold_move(&mut sim, presence(|p| p.idle_secs = 600));
+    sim.tick(at(12, 9, 2, 0), 600, &[Input::PhoneDone { id }]);
+    let json = serde_json::to_value(sim.events.last().unwrap()).unwrap();
+    assert_eq!(json["outcome"], "done");
+    assert_eq!(json["via"], "phone");
+    assert_eq!(json["delayed_by"], "away");
+    assert_eq!(json["shown_ms"], 0);
+    assert_eq!(json["exercises"][0]["reps"], 15);
+    assert_eq!(sim.closed, 0, "nothing was showing");
+    // It stays resolved: returning to the PC shows nothing.
+    sim.run_with(at(12, 9, 5, 0), Presence::default());
+    assert!(sim.shown.is_empty());
+}
+
+#[test]
+fn phone_skip_resolves_a_pending_break() {
+    let mut sim = Sim::new();
+    phone_ready(&mut sim);
+    let id = hold_move(&mut sim, presence(|p| p.locked = true));
+    sim.tick(at(12, 9, 2, 0), 0, &[Input::PhoneSkip { id }]);
+    assert_eq!(sim.outcomes().last(), Some(&Outcome::Skipped));
+    assert_eq!(serde_json::to_value(sim.events.last().unwrap()).unwrap()["via"], "phone");
+}
+
+#[test]
+fn phone_done_closes_an_overlay_that_is_already_showing() {
+    let mut sim = Sim::new();
+    sim.tick(at(12, 8, 59, 30), 0, &[]);
+    sim.run_with(at(12, 9, 1, 0), Presence::default());
+    let id = sim.last_id;
+    sim.tick(at(12, 9, 1, 30), 0, &[Input::PhoneDone { id }]);
+    assert_eq!(sim.closed, 1);
+    assert_eq!(sim.outcomes(), [Outcome::Done]);
+}
+
+#[test]
+fn stale_or_unknown_phone_replies_are_ignored() {
+    let mut sim = Sim::new();
+    phone_ready(&mut sim);
+    let id = hold_move(&mut sim, presence(|p| p.idle_secs = 600));
+    sim.tick(at(12, 9, 2, 0), 600, &[Input::PhoneDone { id: id + 1 }, Input::PhoneSkip { id: id - 1 }]);
+    assert!(sim.events.is_empty());
+}
+
+#[test]
+fn ids_continue_from_the_seed_so_restarts_do_not_reuse_them() {
+    let mut a = Sim::new();
+    a.state = State::new(1_000);
+    a.tick(at(12, 8, 19, 30), 0, &[]);
+    a.run_with(at(12, 8, 21, 0), Presence::default());
+    assert_eq!(a.last_id, 1_001);
+    // A reply from a previous run (ids started at 0) cannot match.
+    a.tick(at(12, 8, 22, 0), 0, &[Input::PhoneDone { id: 1 }]);
+    assert!(a.events.is_empty());
+}
+
+#[test]
+fn control_messages_round_trip_and_garbage_is_rejected() {
+    assert_eq!(parse_control(&control_body(true, 42)), Some(Input::PhoneDone { id: 42 }));
+    assert_eq!(parse_control(&control_body(false, 7)), Some(Input::PhoneSkip { id: 7 }));
+    assert_eq!(parse_control(" done:5
+"), Some(Input::PhoneDone { id: 5 }));
+    for bad in ["", "done", "done:", "done:x", "sleep:1", "done:-1", "DONE:1", "done:1:2"] {
+        assert_eq!(parse_control(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn topic_validation() {
+    use crate::config::valid_topic;
+    assert!(valid_topic("mb-alerts_ABC123"));
+    assert!(valid_topic(&"a".repeat(64)));
+    assert!(!valid_topic(""));
+    assert!(!valid_topic(&"a".repeat(65)));
+    assert!(!valid_topic("has space"));
+    assert!(!valid_topic("slash/name"));
 }
 
 #[test]

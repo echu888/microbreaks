@@ -14,6 +14,7 @@ pub struct Config {
     pub overlay: Overlay,
     pub suppress: Suppress,
     pub notify: Notify,
+    pub ntfy: Ntfy,
 }
 
 impl Config {
@@ -121,6 +122,43 @@ impl Default for Overlay {
     fn default() -> Self {
         Self { monitors: Monitors::All, opacity: 0.85, input_grace_ms: 1000 }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Ntfy {
+    pub enabled: bool,
+    pub server: String,
+    /// Desktop → phone.
+    pub alerts_topic: String,
+    /// Phone → desktop.
+    pub control_topic: String,
+}
+
+impl Default for Ntfy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            server: "https://ntfy.sh".into(),
+            alerts_topic: String::new(),
+            control_topic: String::new(),
+        }
+    }
+}
+
+impl Ntfy {
+    /// Enabled with two valid, distinct topics. Anything else means no phone traffic at all.
+    pub fn is_ready(&self) -> bool {
+        self.enabled
+            && valid_topic(&self.alerts_topic)
+            && valid_topic(&self.control_topic)
+            && self.alerts_topic != self.control_topic
+    }
+}
+
+/// ntfy topics are 1-64 characters of letters, digits, `_` and `-`.
+pub fn valid_topic(t: &str) -> bool {
+    (1..=64).contains(&t.len()) && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Toasts that explain why a movement break was held or missed.

@@ -54,6 +54,7 @@ pub enum Phase {
 #[serde(rename_all = "lowercase")]
 pub enum Via {
     Desktop,
+    Phone,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

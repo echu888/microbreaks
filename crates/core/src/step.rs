@@ -25,6 +25,9 @@ pub struct Presence {
 pub enum Input {
     BreakDone { id: u64, reps: Vec<u32> },
     BreakSkipped { id: u64 },
+    /// Done or Skip tapped on the phone; reps count as the targets.
+    PhoneDone { id: u64 },
+    PhoneSkip { id: u64 },
     DoneForDay,
     Resume,
     TakeBreak(BreakKind),
@@ -46,6 +49,9 @@ pub enum Effect {
     CloseOverlay,
     /// A toast explaining a held or missed break. Only emitted when `notify.enabled`.
     Notify { title: String, body: String },
+    /// A phone notification for a movement break held while nobody is at the PC. Only emitted
+    /// when `ntfy.is_ready()`; the app owns topics and URLs.
+    Push { id: u64, title: String, message: String },
     Log(Event),
 }
 
@@ -71,6 +77,17 @@ pub struct State {
 }
 
 impl State {
+    /// `first_id` seeds break ids. Phone replies carry them, so they must not repeat across
+    /// restarts (the app seeds this from the clock).
+    pub fn new(first_id: u64) -> Self {
+        State { next_id: first_id, ..State::default() }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_id(&self) -> Option<u64> {
+        self.active.as_ref().map(|a| a.spec.id)
+    }
+
     /// Whether the work day for `today` has ended, manually or automatically.
     pub fn day_ended(&self, today: NaiveDate) -> bool {
         self.ended_on == Some(today)
@@ -92,12 +109,22 @@ pub fn step(
         match input {
             Input::BreakDone { id, reps } => {
                 if state.active.as_ref().is_some_and(|a| a.spec.id == *id) {
-                    finish_break(state, now, Outcome::Done, Some(reps), &mut fx);
+                    finish_break(state, now, Outcome::Done, Some(reps), Via::Desktop, &mut fx);
+                }
+            }
+            Input::PhoneDone { id } => {
+                if state.active.as_ref().is_some_and(|a| a.spec.id == *id) {
+                    finish_break(state, now, Outcome::Done, Some(&[]), Via::Phone, &mut fx);
+                }
+            }
+            Input::PhoneSkip { id } => {
+                if state.active.as_ref().is_some_and(|a| a.spec.id == *id) {
+                    finish_break(state, now, Outcome::Skipped, None, Via::Phone, &mut fx);
                 }
             }
             Input::BreakSkipped { id } => {
                 if state.active.as_ref().is_some_and(|a| a.spec.id == *id) {
-                    finish_break(state, now, Outcome::Skipped, None, &mut fx);
+                    finish_break(state, now, Outcome::Skipped, None, Via::Desktop, &mut fx);
                 }
             }
             Input::DoneForDay => {
@@ -162,6 +189,8 @@ pub fn step(
                             cfg.movement.grace_mins
                         );
                         notify(cfg, "Movement break held", body, &mut fx);
+                    } else if cfg.ntfy.is_ready() {
+                        push_to_phone(state, reason, &mut fx);
                     }
                 }
                 Some(reason) => fx.push(Effect::Log(break_event(now, kind, reason.outcome(), 0, None, Vec::new()))),
@@ -292,6 +321,32 @@ fn reason_phrase(reason: BlockReason) -> &'static str {
     }
 }
 
+fn push_to_phone(state: &State, reason: BlockReason, fx: &mut Vec<Effect>) {
+    let Some(active) = &state.active else { return };
+    let what: Vec<String> = active.spec.exercises.iter().map(|e| format!("{} x{}", e.name, e.reps)).collect();
+    fx.push(Effect::Push {
+        id: active.spec.id,
+        title: "Movement break".into(),
+        message: format!("{}. {}.", what.join(", "), reason_phrase(reason)),
+    });
+}
+
+/// Body of the phone's Done/Skip action, e.g. `done:1760000000123`.
+pub fn control_body(done: bool, id: u64) -> String {
+    format!("{}:{id}", if done { "done" } else { "skip" })
+}
+
+/// Parses a message from the control topic. Anything unrecognised is ignored.
+pub fn parse_control(body: &str) -> Option<Input> {
+    let (verb, id) = body.trim().split_once(':')?;
+    let id = id.parse().ok()?;
+    match verb {
+        "done" => Some(Input::PhoneDone { id }),
+        "skip" => Some(Input::PhoneSkip { id }),
+        _ => None,
+    }
+}
+
 fn notify(cfg: &Config, title: &str, body: String, fx: &mut Vec<Effect>) {
     if cfg.notify.enabled {
         fx.push(Effect::Notify { title: title.into(), body });
@@ -344,15 +399,10 @@ fn finish_break(
     now: NaiveDateTime,
     outcome: Outcome,
     reps: Option<&[u32]>,
+    via: Via,
     fx: &mut Vec<Effect>,
 ) {
     let Some(active) = state.active.take() else { return };
-    // A pending break was never shown: log why it never resolved, and there is no overlay to close.
-    // (M3: a phone Done on a pending break must log `done`, not the block reason.)
-    if let Some(reason) = active.pending {
-        fx.push(Effect::Log(break_event(now, active.spec.kind, reason.outcome(), 0, None, Vec::new())));
-        return;
-    }
     let results = match reps {
         Some(reps) if active.spec.kind == BreakKind::Move => active
             .spec
@@ -367,16 +417,36 @@ fn finish_break(
             .collect(),
         _ => Vec::new(),
     };
+    let kind = active.spec.kind;
+    if let Some(reason) = active.pending {
+        // Never shown, so there is no overlay to close. A phone reply resolves it; anything else
+        // (the day ending) leaves it unresolved, logged with the reason that held it.
+        let ev = if via == Via::Phone {
+            break_event(now, kind, outcome, 0, Some(reason), results)
+        } else {
+            break_event(now, kind, reason.outcome(), 0, None, Vec::new())
+        };
+        fx.push(Effect::Log(with_via(ev, via)));
+        return;
+    }
     let shown_ms = (now - active.started).num_milliseconds();
-    fx.push(Effect::Log(break_event(now, active.spec.kind, outcome, shown_ms, active.delayed_by, results)));
+    let ev = break_event(now, kind, outcome, shown_ms, active.delayed_by, results);
+    fx.push(Effect::Log(with_via(ev, via)));
     fx.push(Effect::CloseOverlay);
 }
 
 fn end_day(state: &mut State, now: NaiveDateTime, ts: NaiveDateTime, auto: bool, fx: &mut Vec<Effect>) {
     state.ended_on = Some(now.date());
     // Ending the day while a break is showing counts as dismissing it.
-    finish_break(state, now, Outcome::Skipped, None, fx);
+    finish_break(state, now, Outcome::Skipped, None, Via::Desktop, fx);
     fx.push(Effect::Log(Event::DayEnd { ts, auto }));
+}
+
+fn with_via(mut ev: Event, new: Via) -> Event {
+    if let Event::Break { via, .. } = &mut ev {
+        *via = new;
+    }
+    ev
 }
 
 fn break_event(
