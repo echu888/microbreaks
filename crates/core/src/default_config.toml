@@ -8,7 +8,7 @@ overtime_idle_mins = 30
 enabled        = true
 minutes        = [20, 40]      # :00 is covered by the movement break
 duration_secs  = 20
-idle_skip_secs = 20
+idle_skip_secs = 120
 
 [move]
 enabled        = true

@@ -209,13 +209,21 @@ fn a_long_gap_fires_at_most_one_break() {
 fn eye_break_is_dropped_when_away_but_movement_is_shown() {
     let mut sim = Sim::new();
     sim.tick(at(12, 8, 19, 30), 0, &[]);
-    sim.tick(at(12, 8, 20, 1), 60, &[]);
+    sim.tick(at(12, 8, 20, 1), 150, &[]);
     assert!(sim.shown.is_empty());
     assert_eq!(sim.outcomes(), [Outcome::Away]);
-    sim.tick(at(12, 8, 40, 1), 60, &[]);
+    sim.tick(at(12, 8, 40, 1), 150, &[]);
     sim.tick(at(12, 8, 59, 30), 0, &[]);
-    sim.tick(at(12, 9, 0, 1), 60, &[]);
+    sim.tick(at(12, 9, 0, 1), 150, &[]);
     assert_eq!(sim.shown_times(), ["12 09:00 Move"]);
+}
+
+#[test]
+fn eye_break_is_shown_to_someone_reading_without_touching_input() {
+    let mut sim = Sim::new();
+    sim.tick(at(12, 8, 19, 30), 0, &[]);
+    sim.tick(at(12, 8, 20, 1), 119, &[]);
+    assert_eq!(sim.shown_times(), ["12 08:20 Eye"]);
 }
 
 #[test]
