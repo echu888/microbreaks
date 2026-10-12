@@ -184,9 +184,11 @@ Polled each tick via `WTSQuerySessionInformationW(WTSSessionInfoEx)`, reading `S
 
 When enabled, a Windows toast explains why a break didn't happen, so "why didn't my squat break show?" has an answer without opening `events.jsonl`. It is also the easiest way to see what each probe is doing.
 
-- **Movement break goes pending:** "Movement break held (meeting), will show when you're free, up to 15 min".
-- **Pending break expires:** "Movement break missed: still locked".
-- **No toast for:** dropped eye breaks (too frequent), `asleep` and `locked` (you can't see it), or `away` (you aren't there).
+- **Movement break held for `meeting` or `busy`:** "Movement break held: Camera or mic in use. Will show when you're free, up to 15 min."
+- **Pending break expires, for any reason:** "Movement break missed: The PC was locked for the whole 15 min grace window." This one stays in the Action Center, so you see it even if you were away.
+- **No toast for:** a break held for `locked` or `away` (nobody is looking at the screen), dropped eye breaks (too frequent), or `asleep`.
+- Setting is `[notify] enabled`. Config is only read at startup, so restart after editing it.
+- Unpackaged builds show toasts under a generic app name; the proper name arrives with MSIX (M5).
 - Core emits `Effect::Notify { title, body }`; the app shows it. Disabled by default, like the heads-up toast.
 
 ## Phone via ntfy

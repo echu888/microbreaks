@@ -26,7 +26,7 @@ _Last updated: 2026-10-12_
    - **Busy:** play a fullscreen video/game at a break time; the break logs `busy` / waits. Confirm our own overlay does not make the probe report busy, and note which `QUNS_*` values fire. Focus assist and fullscreen Store apps are not detected (`QUNS_QUIET_TIME` / `QUNS_APP` left out on purpose); check whether that matters.
    - **Asleep:** sleep the PC across a slot; events show `asleep` at the slot times.
    - **Day end on lock/sleep:** after 17:00, lock the PC and check for an auto `day_end` at the last input time.
-4. Block-reason toasts (planned, see SPEC → Block notifications): `Effect::Notify` in core with tests, `tauri-plugin-notification` in `src-tauri`, `[notify]` config (off by default). New branch off M2. Turn it on while doing the M2 manual checks above.
+4. Block-reason toasts are written on branch `block-toasts` (core tests pass, app builds) but the **toast display is unverified**: add `[notify]` with `enabled = true` to `%APPDATA%\microbreaks\config.toml`, restart the new build, and trigger a meeting/busy hold, then let a pending break expire. Check the toast shows and what app name it uses. The release build now running predates this.
 5. Start M3 (phone via ntfy). First verify iOS ntfy `http` actions.
 
 ## Known issues / risks
@@ -47,3 +47,4 @@ _Last updated: 2026-10-12_
 - 2026-10-12: Eye `idle_skip_secs` default 20 → 120 (readers who don't touch input were losing breaks); spec, default config and tests updated, 21 core tests pass.
 - 2026-10-12: Hand-verified tray, focus-stealing overlay, eye-break gating and event log; M1 ticked, M0 waits on autostart.
 - 2026-10-12: M2 written: `Presence` snapshot, block priority, pending/grace for movement breaks, asleep via tick gap, `delayed_by`, lock/sleep day end, Win32 probes for lock, camera/mic and busy. 35 core tests pass, app builds. Probes await manual verification.
+- 2026-10-12: Block-reason toasts: `Effect::Notify`, `[notify]` config (off by default), `tauri-plugin-notification`. 38 core tests pass. Display unverified.
