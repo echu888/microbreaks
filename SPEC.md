@@ -187,9 +187,9 @@ When enabled, a Windows toast explains why a break didn't happen, so "why didn't
 - **Movement break held for `meeting` or `busy`:** "Movement break held: Camera or mic in use. Will show when you're free, up to 15 min."
 - **Pending break expires, for any reason:** "Movement break missed: The PC was locked for the whole 15 min grace window." This one stays in the Action Center, so you see it even if you were away.
 - **No toast for:** a break held for `locked` or `away` (nobody is looking at the screen), dropped eye breaks (too frequent), or `asleep`.
-- Setting is `[notify] enabled`. Config is only read at startup, so restart after editing it.
+- Setting is `[toasts] enabled`. Config is only read at startup, so restart after editing it.
 - Unpackaged builds show toasts under a generic app name; the proper name arrives with MSIX (M5).
-- Core emits `Effect::Notify { title, body }`; the app shows it. Disabled by default, like the heads-up toast.
+- Core emits `Effect::Toast { title, body }`; the app shows it. Disabled by default, like the heads-up toast.
 
 ## Phone via ntfy
 
@@ -317,7 +317,7 @@ eye           = false          # eye breaks in Off-hours when active at the PC
 enabled = false
 secs    = 10
 
-[notify]
+[toasts]
 enabled = false                # toast when a movement break is held or missed, with the reason
 
 [overlay]

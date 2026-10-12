@@ -47,8 +47,8 @@ pub enum Effect {
     /// Replaces any overlay already showing.
     ShowOverlay(BreakSpec),
     CloseOverlay,
-    /// A toast explaining a held or missed break. Only emitted when `notify.enabled`.
-    Notify { title: String, body: String },
+    /// A toast explaining a held or missed break. Only emitted when `toasts.enabled`.
+    Toast { title: String, body: String },
     /// A phone notification for a movement break held while nobody is at the PC. Only emitted
     /// when `ntfy.is_ready()`; the app owns topics and URLs.
     Push { id: u64, title: String, message: String },
@@ -188,7 +188,7 @@ pub fn step(
                             reason_phrase(reason),
                             cfg.movement.grace_mins
                         );
-                        notify(cfg, "Movement break held", body, &mut fx);
+                        toast(cfg, "Movement break held", body, &mut fx);
                     } else if cfg.ntfy.is_ready() {
                         push_to_phone(state, reason, &mut fx);
                     }
@@ -302,7 +302,7 @@ fn resolve_pending(state: &mut State, cfg: &Config, now: NaiveDateTime, presence
         state.active = None;
         fx.push(Effect::Log(break_event(now, BreakKind::Move, reason.outcome(), 0, None, Vec::new())));
         let body = format!("{} for the whole {} min grace window.", reason_phrase(reason), cfg.movement.grace_mins);
-        notify(cfg, "Movement break missed", body, fx);
+        toast(cfg, "Movement break missed", body, fx);
     } else if block_reason(cfg, presence, BreakKind::Move).is_none() {
         active.pending = None;
         active.delayed_by = Some(reason);
@@ -347,9 +347,9 @@ pub fn parse_control(body: &str) -> Option<Input> {
     }
 }
 
-fn notify(cfg: &Config, title: &str, body: String, fx: &mut Vec<Effect>) {
-    if cfg.notify.enabled {
-        fx.push(Effect::Notify { title: title.into(), body });
+fn toast(cfg: &Config, title: &str, body: String, fx: &mut Vec<Effect>) {
+    if cfg.toasts.enabled {
+        fx.push(Effect::Toast { title: title.into(), body });
     }
 }
 

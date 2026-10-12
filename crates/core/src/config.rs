@@ -13,7 +13,7 @@ pub struct Config {
     pub movement: Movement,
     pub overlay: Overlay,
     pub suppress: Suppress,
-    pub notify: Notify,
+    pub toasts: Toasts,
     pub ntfy: Ntfy,
 }
 
@@ -164,7 +164,7 @@ pub fn valid_topic(t: &str) -> bool {
 /// Toasts that explain why a movement break was held or missed.
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default)]
-pub struct Notify {
+pub struct Toasts {
     pub enabled: bool,
 }
 

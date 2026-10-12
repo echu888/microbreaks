@@ -133,7 +133,7 @@ pub fn tick(app: &AppHandle) {
             match effect {
                 Effect::ShowOverlay(spec) => e.current = Some(spec.clone()),
                 Effect::CloseOverlay => e.current = None,
-                Effect::Notify { .. } | Effect::Push { .. } => {}
+                Effect::Toast { .. } | Effect::Push { .. } => {}
                 Effect::Log(event) => e.log(event),
             }
         }
@@ -158,7 +158,7 @@ pub fn tick(app: &AppHandle) {
                 let ntfy_cfg = cfg.ntfy.clone();
                 std::thread::spawn(move || ntfy::publish(&ntfy_cfg, id, &title, &message));
             }
-            Effect::Notify { title, body } => {
+            Effect::Toast { title, body } => {
                 if let Err(e) = app.notification().builder().title(title).body(body).show() {
                     eprintln!("microbreaks: could not show notification: {e}");
                 }

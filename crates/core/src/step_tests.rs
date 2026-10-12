@@ -41,7 +41,7 @@ impl Sim {
                     self.last_id = spec.id;
                 }
                 Effect::CloseOverlay => self.closed += 1,
-                Effect::Notify { title, body } => self.toasts.push((title, body)),
+                Effect::Toast { title, body } => self.toasts.push((title, body)),
                 Effect::Push { id, message, .. } => self.pushes.push((id, message)),
                 Effect::Log(ev) => self.events.push(ev),
             }
@@ -363,7 +363,7 @@ fn a_new_due_break_replaces_a_pending_one_without_touching_the_overlay() {
 #[test]
 fn toast_when_a_movement_break_is_held_for_a_meeting_or_busy() {
     let mut sim = Sim::new();
-    sim.cfg.notify.enabled = true;
+    sim.cfg.toasts.enabled = true;
     sim.tick(at(12, 8, 59, 30), 0, &[]);
     sim.run_with(at(12, 9, 1, 0), presence(|p| p.meeting = true));
     assert_eq!(sim.toasts.len(), 1);
@@ -374,12 +374,12 @@ fn toast_when_a_movement_break_is_held_for_a_meeting_or_busy() {
 #[test]
 fn no_toast_when_held_for_locked_or_away_or_when_disabled() {
     let mut sim = Sim::new();
-    sim.cfg.notify.enabled = true;
+    sim.cfg.toasts.enabled = true;
     sim.tick(at(12, 8, 59, 30), 0, &[]);
     sim.run_with(at(12, 9, 1, 0), presence(|p| p.locked = true));
     assert!(sim.toasts.is_empty());
 
-    let mut sim = Sim::new(); // notify defaults to off
+    let mut sim = Sim::new(); // toasts default to off
     sim.tick(at(12, 8, 59, 30), 0, &[]);
     sim.run_with(at(12, 9, 1, 0), presence(|p| p.meeting = true));
     sim.run_with(at(12, 9, 20, 0), presence(|p| p.meeting = true));
@@ -389,7 +389,7 @@ fn no_toast_when_held_for_locked_or_away_or_when_disabled() {
 #[test]
 fn toast_when_a_pending_break_expires_but_not_when_dropped_eye_breaks() {
     let mut sim = Sim::new();
-    sim.cfg.notify.enabled = true;
+    sim.cfg.toasts.enabled = true;
     let away = presence(|p| p.idle_secs = 600);
     sim.tick(at(12, 8, 19, 30), 0, &[]);
     sim.run_with(at(12, 8, 21, 0), away); // eye dropped: no toast
