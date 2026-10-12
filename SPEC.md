@@ -1,4 +1,4 @@
-# microbreaks — spec (draft v0.4)
+# microbreaks — spec (draft v0.5)
 
 A small desktop app that enforces two habits:
 
@@ -27,11 +27,32 @@ Primary target is **Windows**.
 
 ## Day phases
 
-| Phase | Breaks | Delivered by | Ends when |
+| Phase | When | Breaks | Ends when |
 |---|---|---|---|
-| **Work** | eye + movement | Desktop overlay; phone push if away | `day_end` (see below) |
-| **Evening** | movement (eye optional) | Desktop overlay if active at PC, else phone push | `sleep` (see below) |
-| **Sleep** | none | — | next `workday.start` (or `evening.start` on non-work days) |
+| **Work** | work days, `workday.start` → `day_end` | eye + movement | `day_end` (see below) |
+| **Off-hours** | work days after `day_end`; non-work days from `offhours.weekend_start` | movement hourly (eye optional) | `sleep` (see below) |
+| **Sleep** | after `sleep` | none | next morning: `workday.start`, or `offhours.weekend_start` on non-work days |
+
+- **Weekends** (any non-work day) are Off-hours all day, from `weekend_start` (default 09:00) to `sleep`.
+- **Pause** is a temporary overlay on any phase (tray "Pause for 30 min / 1 h"). It resumes automatically.
+
+### Phase vs. presence
+
+- **Away is not a phase.** Presence (at PC / away / locked / in a meeting / busy) is checked separately and only decides **how** a break is delivered:
+  - **at PC:** desktop overlay.
+  - **away / locked:** phone push for movement breaks.
+  - **meeting / busy:** held as pending.
+- This works the same in Work and Off-hours. The only difference is which breaks run.
+
+### Status display
+
+What the user sees is **phase + presence + next break**, e.g. "Work · next: eye break 10:20" or "Off-hours · away · next: movement 19:00 (→ phone)".
+
+- **Tray icon:** a distinct icon per phase, with a small badge for paused / pending break.
+  - Work: active colour. Off-hours: muted colour. Sleep: moon. Paused: pause badge. Pending: dot badge.
+- **Tray tooltip:** the full status line above.
+- **Tray menu:** the status line as a disabled header item at the top.
+- **Phone:** no persistent status. Off-hours pushes say "Off-hours" in the title, so the context is clear.
 
 ### Ending the work day (`day_end`)
 
@@ -44,15 +65,15 @@ Primary target is **Windows**.
 ### Going to sleep (`sleep`)
 
 - **Manual:**
-  - A **"Going to sleep"** action button on every evening phone notification (see ntfy below).
+  - A **"Going to sleep"** action button on every Off-hours phone notification (see ntfy below).
   - The same item in the tray.
-- **Backstop:** `evening.quiet_after` (default 22:00). Reminders never run all night.
+- **Backstop:** `offhours.quiet_after` (default 22:00). Reminders never run all night.
 - The logged timestamp gives bedtime stats next to shutdown-time stats.
 
-### Evening limitations
+### Off-hours limitations
 
-- Evening reminders come from the desktop app, so the PC must be on (usually true).
-- If the PC is off or asleep, there are no evening reminders. This is accepted for now; fixing it needs a native phone app (see Future).
+- Off-hours reminders come from the desktop app, so the PC must be on (usually true on weekday evenings, perhaps less so on weekends).
+- If the PC is off or asleep, there are no Off-hours reminders. This is accepted for now; fixing it needs a native phone app (see Future).
 - iOS Sleep Focus silences notifications anyway, which is a free extra safety net.
 
 ## Breaks
@@ -65,7 +86,7 @@ Primary target is **Windows**.
 - **Work day:** Mon–Fri, starting 08:00.
   - First break is 08:20; 08:00 does not fire.
   - Breaks continue past 17:00 until `day_end`.
-- **Evening:** movement breaks at `:00` from `day_end` to `sleep` (frequency is an open question).
+- **Off-hours:** movement breaks hourly at `:00`, until `sleep`.
 - **One break at a time:** a newly due break replaces any pending or showing one. The old one is logged `replaced`.
 
 ### Break lifecycle
@@ -154,17 +175,18 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentSt
   2. Subscribe to a long random topic name. The app generates one; the name acts as the password, so don't use a guessable one.
   3. Paste that topic into `config.toml`.
 - **Two topics:**
-  - `alerts`: desktop → phone. Away buzzer and evening reminders.
+  - `alerts`: desktop → phone. Away buzzer and Off-hours reminders.
   - `control`: phone → desktop. The desktop keeps a streaming subscription (`GET /<topic>/json`).
-- **Action buttons:** notifications carry ntfy `http` action buttons that publish to the control topic: **Done**, **Skip**, and in the evening **Going to sleep**.
+- **Action buttons:** notifications carry ntfy `http` action buttons that publish to the control topic: **Done**, **Skip**, and in Off-hours **Going to sleep**.
   - The desktop receives these and resolves the pending break (logged `via: "phone"`; reps = target) or enters the Sleep phase.
   - *Verify early in M3 that the iOS ntfy app supports `http` actions.* Fallback: a `view` action opening a tiny local-network page, or notifications without buttons plus the tray / `quiet_after` for sleep.
 - **Security:** anyone who learns the topic names could send fake Done/Sleep messages. That's acceptable for a personal tool. A reserved, password-protected topic (ntfy Pro or self-hosted) is the upgrade path.
 
 ## Tray
 
-- Icon shows the state: work / evening / sleep / paused / pending break.
+- Icon, tooltip and header item show the status (see Status display).
 - Menu:
+  - *Status line* (header, disabled)
   - Next break at HH:MM
   - Pause for 30 min / 1 h
   - Done for the day / Resume
@@ -182,7 +204,7 @@ Events are appended to `%APPDATA%\microbreaks\events.jsonl`. That's about 30 lin
 **Break events:**
 
 ```json
-{ "ts": "...", "type": "break", "kind": "eye"|"move", "phase": "work"|"evening",
+{ "ts": "...", "type": "break", "kind": "eye"|"move", "phase": "work"|"offhours",
   "outcome": "...", "delayed_by": "away"|"locked"|"meeting"|"busy"|null,
   "via": "desktop"|"phone", "shown_ms": 0,
   "exercises": [{ "name": "squats", "target": 15, "reps": 15 }] }
@@ -244,11 +266,11 @@ reps = 15
 # name = "pushups"
 # reps = 10
 
-[evening]
-enabled     = false
-start       = "17:00"          # used on non-work days; on work days evening starts at day_end
-quiet_after = "22:00"
-eye         = false            # eye breaks in the evening when active at the PC
+[offhours]
+enabled       = false
+weekend_start = "09:00"        # non-work days are Off-hours from here; work days switch at day_end
+quiet_after   = "22:00"
+eye           = false          # eye breaks in Off-hours when active at the PC
 
 [heads_up]
 enabled = false
@@ -317,7 +339,7 @@ microbreaks/
 3. **M2 — Smart suppression:** lock, asleep, camera/mic and fullscreen detection, plus the pending/grace mechanism.
 4. **M3 — Phone via ntfy:**
    - Away buzzer with Done/Skip actions.
-   - Evening phase and Going to sleep.
+   - Off-hours phase (weekday evenings + weekends) and Going to sleep.
    - First, verify iOS `http` actions.
 5. **M4 — Polish:**
    - Pause and "take a break now".
@@ -331,5 +353,4 @@ microbreaks/
 
 ## Open questions
 
-- Evening movement frequency: hourly, or every 2 h?
-- Weekends: no reminders, or evening-style reminders (needs the PC on, or the future phone app)?
+- None blocking. Revisit weekend reliability (PC off) once M3 is in use.
