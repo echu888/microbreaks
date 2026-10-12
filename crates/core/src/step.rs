@@ -2,7 +2,7 @@ use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
 use serde::Serialize;
 
 use crate::config::{Config, Exercise, MoveMode};
-use crate::event::{BlockReason, BreakKind, Event, ExerciseResult, Outcome, Phase, Via};
+use crate::event::{BlockReason, BreakKind, Event, ExerciseResult, Outcome, Phase, SleepSource, Via};
 
 /// Longest gap between ticks that is scanned for due breaks.
 const MAX_SCAN: Duration = Duration::hours(24);
@@ -30,6 +30,10 @@ pub enum Input {
     PhoneSkip { id: u64 },
     DoneForDay,
     Resume,
+    /// "Going to sleep" from the tray. Ignored during Work and while already asleep.
+    GoingToSleep,
+    /// "Going to sleep" tapped on the phone. Same gate.
+    PhoneSleep,
     TakeBreak(BreakKind),
     /// Debug aid: start a movement break already held for `reason`, as if it came due while blocked.
     TakeHeldBreak(BlockReason),
@@ -53,7 +57,8 @@ pub enum Effect {
     Toast { title: String, body: String },
     /// A phone notification for a movement break held while nobody is at the PC. Only emitted
     /// when `ntfy.is_ready()`; the app owns topics and URLs.
-    Push { id: u64, title: String, message: String },
+    /// `sleep_button` adds "Going to sleep" (Off-hours only).
+    Push { id: u64, title: String, message: String, sleep_button: bool },
     Log(Event),
 }
 
@@ -66,6 +71,8 @@ struct Active {
     pending: Option<BlockReason>,
     /// Why a shown break was held first.
     delayed_by: Option<BlockReason>,
+    /// Phase when it started; it keeps logging as that even if the phase changes.
+    phase: Phase,
 }
 
 #[derive(Debug, Default)]
@@ -73,6 +80,10 @@ pub struct State {
     last_tick: Option<NaiveDateTime>,
     /// The date whose work day has ended (manually or automatically).
     ended_on: Option<NaiveDate>,
+    /// The `day_end` timestamp for `ended_on` (the real shutdown time).
+    ended_ts: Option<NaiveDateTime>,
+    /// The user's Sleep phase lasts until this wake time. Not the PC sleeping.
+    sleep_until: Option<NaiveDateTime>,
     active: Option<Active>,
     next_id: u64,
     rotate: usize,
@@ -137,11 +148,20 @@ pub fn step(
             Input::Resume => {
                 if state.ended_on == Some(today) {
                     state.ended_on = None;
+                    state.ended_ts = None;
                     fx.push(Effect::Log(Event::DayResume { ts: now }));
                 }
             }
-            Input::TakeBreak(kind) => start_break(state, cfg, now, *kind, None, &mut fx),
-            Input::TakeHeldBreak(reason) => hold_movement_break(state, cfg, now, *reason, &mut fx),
+            Input::GoingToSleep => try_sleep(state, cfg, now, SleepSource::Tray, &mut fx),
+            Input::PhoneSleep => try_sleep(state, cfg, now, SleepSource::Phone, &mut fx),
+            Input::TakeBreak(kind) => {
+                let phase = phase_now(cfg, state, now);
+                start_break(state, cfg, now, *kind, None, phase, &mut fx);
+            }
+            Input::TakeHeldBreak(reason) => {
+                let phase = phase_now(cfg, state, now);
+                hold_movement_break(state, cfg, now, *reason, phase, &mut fx);
+            }
         }
     }
 
@@ -153,11 +173,12 @@ pub fn step(
         // Closing the lid after `end` is a shutdown; sleeping before `end` and waking after it is not.
         if is_workday(cfg, prev.date()) && state.ended_on != Some(prev.date()) && prev.time() >= cfg.workday.end {
             state.ended_on = Some(prev.date());
+            state.ended_ts = Some(prev);
             fx.push(Effect::Log(Event::DayEnd { ts: prev, auto: true }));
         }
         // Logged at the slot time, not the wake time, so the stats show when the break was missed.
-        for (t, kind) in due_slots(state, cfg, prev, now) {
-            fx.push(Effect::Log(break_event(t, kind, Outcome::Asleep, 0, None, Vec::new())));
+        for (t, kind, phase) in due_slots(state, cfg, prev, now) {
+            fx.push(Effect::Log(break_event(t, phase, kind, Outcome::Asleep, 0, None, Vec::new())));
         }
     }
 
@@ -175,15 +196,21 @@ pub fn step(
         }
     }
 
+    auto_sleep(state, cfg, now, &mut fx);
+
     resolve_pending(state, cfg, now, presence, &mut fx);
 
     // A gap was handled above. Otherwise only the latest slot fires, so a skipped tick yields at most one break.
     if !slept {
-        if let Some((_, kind)) = due_slots(state, cfg, prev, now).pop() {
+        if let Some((_, kind, phase)) = due_slots(state, cfg, prev, now).pop() {
             match block_reason(cfg, presence, kind) {
-                None => start_break(state, cfg, now, kind, None, &mut fx),
-                Some(reason) if kind == BreakKind::Move => hold_movement_break(state, cfg, now, reason, &mut fx),
-                Some(reason) => fx.push(Effect::Log(break_event(now, kind, reason.outcome(), 0, None, Vec::new()))),
+                None => start_break(state, cfg, now, kind, None, phase, &mut fx),
+                Some(reason) if kind == BreakKind::Move => {
+                    hold_movement_break(state, cfg, now, reason, phase, &mut fx)
+                }
+                Some(reason) => {
+                    fx.push(Effect::Log(break_event(now, phase, kind, reason.outcome(), 0, None, Vec::new())))
+                }
             }
         }
     }
@@ -195,7 +222,7 @@ pub fn step(
 pub fn next_break(state: &State, cfg: &Config, now: NaiveDateTime) -> Option<(BreakKind, NaiveDateTime)> {
     let mut t = floor_minute(now) + Duration::minutes(1);
     for _ in 0..8 * 24 * 60 {
-        if let Some(kind) = slot_kind(cfg, state.ended_on, t) {
+        if let Some((kind, _)) = slot_kind(cfg, state, t) {
             return Some((kind, t));
         }
         t += Duration::minutes(1);
@@ -206,7 +233,11 @@ pub fn next_break(state: &State, cfg: &Config, now: NaiveDateTime) -> Option<(Br
 /// e.g. "Work · next: eye break 10:20" (shown in the tray).
 pub fn status_line(state: &State, cfg: &Config, now: NaiveDateTime) -> String {
     let today = now.date();
-    let phase = if state.ended_on == Some(today) {
+    let phase = if is_sleeping(state, now) {
+        "Sleep"
+    } else if in_offhours(cfg, state, now) {
+        "Off-hours"
+    } else if state.ended_on == Some(today) {
         "Done for the day"
     } else if is_workday(cfg, today) {
         "Work"
@@ -234,34 +265,138 @@ fn floor_minute(t: NaiveDateTime) -> NaiveDateTime {
     t.with_second(0).and_then(|t| t.with_nanosecond(0)).unwrap_or(t)
 }
 
-/// Which break, if any, is scheduled at the minute boundary `t`.
-fn slot_kind(cfg: &Config, ended_on: Option<NaiveDate>, t: NaiveDateTime) -> Option<BreakKind> {
+/// Whether the user's Sleep phase covers `t`.
+fn is_sleeping(state: &State, t: NaiveDateTime) -> bool {
+    state.sleep_until.is_some_and(|wake| t < wake)
+}
+
+/// Off-hours: movement hourly after the work day ends, or on a non-work day after `weekend_start`,
+/// until `quiet_after` or sleep.
+fn in_offhours(cfg: &Config, state: &State, t: NaiveDateTime) -> bool {
+    cfg.offhours.enabled && !is_sleeping(state, t) && t.time() < cfg.offhours.quiet_after && offhours_day(cfg, state, t)
+}
+
+/// The day-level part of Off-hours, ignoring `quiet_after` and sleep.
+fn offhours_day(cfg: &Config, state: &State, t: NaiveDateTime) -> bool {
     let date = t.date();
-    if !is_workday(cfg, date) || ended_on == Some(date) || t.time() <= cfg.workday.start {
+    if is_workday(cfg, date) {
+        state.ended_on == Some(date)
+    } else {
+        t.time() > cfg.offhours.weekend_start
+    }
+}
+
+/// Work: a work day that hasn't ended, after `workday.start`.
+fn in_work(cfg: &Config, state: &State, t: NaiveDateTime) -> bool {
+    is_workday(cfg, t.date()) && state.ended_on != Some(t.date()) && t.time() > cfg.workday.start
+}
+
+/// Phase for a break started outside the schedule (manual or debug): anything but Work is Off-hours.
+fn phase_now(cfg: &Config, state: &State, now: NaiveDateTime) -> Phase {
+    if in_work(cfg, state, now) {
+        Phase::Work
+    } else {
+        Phase::Offhours
+    }
+}
+
+/// Which break, if any, is scheduled at the minute boundary `t`, and in which phase.
+fn slot_kind(cfg: &Config, state: &State, t: NaiveDateTime) -> Option<(BreakKind, Phase)> {
+    if is_sleeping(state, t) {
         return None;
     }
     let minute = t.minute();
-    if minute == 0 && cfg.movement.enabled {
-        Some(BreakKind::Move)
-    } else if cfg.eye.enabled && cfg.eye.minutes.contains(&minute) {
-        Some(BreakKind::Eye)
+    if in_work(cfg, state, t) {
+        if minute == 0 && cfg.movement.enabled {
+            Some((BreakKind::Move, Phase::Work))
+        } else if cfg.eye.enabled && cfg.eye.minutes.contains(&minute) {
+            Some((BreakKind::Eye, Phase::Work))
+        } else {
+            None
+        }
+    } else if in_offhours(cfg, state, t) {
+        if minute == 0 && cfg.movement.enabled {
+            Some((BreakKind::Move, Phase::Offhours))
+        } else if cfg.offhours.eye && cfg.eye.enabled && cfg.eye.minutes.contains(&minute) {
+            Some((BreakKind::Eye, Phase::Offhours))
+        } else {
+            None
+        }
     } else {
         None
     }
 }
 
 /// Every slot in `(prev, now]`, oldest first.
-fn due_slots(state: &State, cfg: &Config, prev: NaiveDateTime, now: NaiveDateTime) -> Vec<(NaiveDateTime, BreakKind)> {
+fn due_slots(
+    state: &State,
+    cfg: &Config,
+    prev: NaiveDateTime,
+    now: NaiveDateTime,
+) -> Vec<(NaiveDateTime, BreakKind, Phase)> {
     let from = if now - prev > MAX_SCAN { now - MAX_SCAN } else { prev };
     let mut t = floor_minute(from) + Duration::minutes(1);
     let mut due = Vec::new();
     while t <= now {
-        if let Some(kind) = slot_kind(cfg, state.ended_on, t) {
-            due.push((t, kind));
+        if let Some((kind, phase)) = slot_kind(cfg, state, t) {
+            due.push((t, kind, phase));
         }
         t += Duration::minutes(1);
     }
     due
+}
+
+/// The first morning after `t`: `workday.start` on a work day, `weekend_start` otherwise.
+pub(crate) fn wake_after(cfg: &Config, t: NaiveDateTime) -> NaiveDateTime {
+    let mut date = t.date();
+    loop {
+        let boundary = if is_workday(cfg, date) { cfg.workday.start } else { cfg.offhours.weekend_start };
+        let wake = date.and_time(boundary);
+        if wake > t {
+            return wake;
+        }
+        date += Duration::days(1);
+    }
+}
+
+/// Starts the Sleep phase. `ts` is the logged bedtime; `now` is when it was noticed.
+fn go_to_sleep(
+    state: &mut State,
+    cfg: &Config,
+    now: NaiveDateTime,
+    ts: NaiveDateTime,
+    source: SleepSource,
+    fx: &mut Vec<Effect>,
+) {
+    state.sleep_until = Some(wake_after(cfg, ts));
+    // Like ending the day: a showing break counts as dismissed, a pending one stays unresolved.
+    finish_break(state, now, Outcome::Skipped, None, Via::Desktop, fx);
+    fx.push(Effect::Log(Event::Sleep { ts, source }));
+}
+
+/// A manual sleep request. Ignored during Work (a misclick would silence the rest of the day,
+/// and nothing undoes it) and while already asleep.
+fn try_sleep(state: &mut State, cfg: &Config, now: NaiveDateTime, source: SleepSource, fx: &mut Vec<Effect>) {
+    if in_work(cfg, state, now) || is_sleeping(state, now) {
+        return;
+    }
+    go_to_sleep(state, cfg, now, now, source, fx);
+}
+
+/// The `quiet_after` backstop. Bedtime is `quiet_after`, but never before the day's shutdown.
+fn auto_sleep(state: &mut State, cfg: &Config, now: NaiveDateTime, fx: &mut Vec<Effect>) {
+    if !cfg.offhours.enabled
+        || is_sleeping(state, now)
+        || now.time() < cfg.offhours.quiet_after
+        || !offhours_day(cfg, state, now)
+    {
+        return;
+    }
+    let mut ts = now.date().and_time(cfg.offhours.quiet_after);
+    if let Some(ended) = state.ended_ts.filter(|e| e.date() == now.date()) {
+        ts = ts.max(ended);
+    }
+    go_to_sleep(state, cfg, now, ts, SleepSource::Auto, fx);
 }
 
 /// What holds a break back right now. Checked in priority order: someone on a call or
@@ -289,8 +424,9 @@ fn resolve_pending(state: &mut State, cfg: &Config, now: NaiveDateTime, presence
     let Some(active) = state.active.as_mut() else { return };
     let Some(reason) = active.pending else { return };
     if now - active.started > Duration::minutes(cfg.movement.grace_mins as i64) {
+        let phase = active.phase;
         state.active = None;
-        fx.push(Effect::Log(break_event(now, BreakKind::Move, reason.outcome(), 0, None, Vec::new())));
+        fx.push(Effect::Log(break_event(now, phase, BreakKind::Move, reason.outcome(), 0, None, Vec::new())));
         let body = format!("{} for the whole {} min grace window.", reason_phrase(reason), cfg.movement.grace_mins);
         toast(cfg, "Movement break missed", body, fx);
     } else if block_reason(cfg, presence, BreakKind::Move).is_none() {
@@ -312,30 +448,53 @@ fn reason_phrase(reason: BlockReason) -> &'static str {
 }
 
 /// Starts a movement break held for `reason`, and tells the user where it matters.
-fn hold_movement_break(state: &mut State, cfg: &Config, now: NaiveDateTime, reason: BlockReason, fx: &mut Vec<Effect>) {
-    start_break(state, cfg, now, BreakKind::Move, Some(reason), fx);
+fn hold_movement_break(
+    state: &mut State,
+    cfg: &Config,
+    now: NaiveDateTime,
+    reason: BlockReason,
+    phase: Phase,
+    fx: &mut Vec<Effect>,
+) {
+    start_break(state, cfg, now, BreakKind::Move, Some(reason), phase, fx);
     // Locked and away mean nobody is looking at the screen to read a toast; they get the phone instead.
     if matches!(reason, BlockReason::Meeting | BlockReason::Busy) {
         let body = format!("{}. Will show when you're free, up to {} min.", reason_phrase(reason), cfg.movement.grace_mins);
         toast(cfg, "Movement break held", body, fx);
     } else if cfg.ntfy.is_ready() {
-        push_to_phone(state, reason, fx);
+        push_to_phone(state, cfg, reason, fx);
     }
 }
 
-fn push_to_phone(state: &State, reason: BlockReason, fx: &mut Vec<Effect>) {
+fn push_to_phone(state: &State, cfg: &Config, reason: BlockReason, fx: &mut Vec<Effect>) {
     let Some(active) = &state.active else { return };
     let what: Vec<String> = active.spec.exercises.iter().map(|e| format!("{} x{}", e.name, e.reps)).collect();
+    // Off-hours pushes say so, and can end the evening with "Going to sleep".
+    let offhours = cfg.offhours.enabled && active.phase == Phase::Offhours;
     fx.push(Effect::Push {
         id: active.spec.id,
-        title: "Movement break".into(),
+        title: if offhours { "Off-hours movement break" } else { "Movement break" }.into(),
         message: format!("{}. {}.", what.join(", "), reason_phrase(reason)),
+        sleep_button: offhours,
     });
 }
 
-/// Body of the phone's Done/Skip action, e.g. `done:1760000000123`.
-pub fn control_body(done: bool, id: u64) -> String {
-    format!("{}:{id}", if done { "done" } else { "skip" })
+/// A button on the phone notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reply {
+    Done,
+    Skip,
+    Sleep,
+}
+
+/// Body of a phone action, e.g. `done:1760000000123`. The id is the notification's break.
+pub fn control_body(reply: Reply, id: u64) -> String {
+    let verb = match reply {
+        Reply::Done => "done",
+        Reply::Skip => "skip",
+        Reply::Sleep => "sleep",
+    };
+    format!("{verb}:{id}")
 }
 
 /// Parses a message from the control topic. Anything unrecognised is ignored.
@@ -345,6 +504,8 @@ pub fn parse_control(body: &str) -> Option<Input> {
     match verb {
         "done" => Some(Input::PhoneDone { id }),
         "skip" => Some(Input::PhoneSkip { id }),
+        // Not tied to the break, so a tap after Done on the desktop still works.
+        "sleep" => Some(Input::PhoneSleep),
         _ => None,
     }
 }
@@ -362,12 +523,14 @@ fn start_break(
     now: NaiveDateTime,
     kind: BreakKind,
     hold: Option<BlockReason>,
+    phase: Phase,
     fx: &mut Vec<Effect>,
 ) {
     // A new overlay replaces the old one, but a held break shows nothing, so close it explicitly.
     if let Some(old) = state.active.take() {
         let shown_ms = if old.pending.is_some() { 0 } else { (now - old.started).num_milliseconds() };
-        fx.push(Effect::Log(break_event(now, old.spec.kind, Outcome::Replaced, shown_ms, None, Vec::new())));
+        let ev = break_event(now, old.phase, old.spec.kind, Outcome::Replaced, shown_ms, None, Vec::new());
+        fx.push(Effect::Log(ev));
         if old.pending.is_none() && hold.is_some() {
             fx.push(Effect::CloseOverlay);
         }
@@ -392,7 +555,7 @@ fn start_break(
     if hold.is_none() {
         fx.push(Effect::ShowOverlay(spec.clone()));
     }
-    state.active = Some(Active { spec, started: now, pending: hold, delayed_by: None });
+    state.active = Some(Active { spec, started: now, pending: hold, delayed_by: None, phase });
 }
 
 /// Logs the active break with `outcome` and closes its overlay.
@@ -424,21 +587,22 @@ fn finish_break(
         // Never shown, so there is no overlay to close. A phone reply resolves it; anything else
         // (the day ending) leaves it unresolved, logged with the reason that held it.
         let ev = if via == Via::Phone {
-            break_event(now, kind, outcome, 0, Some(reason), results)
+            break_event(now, active.phase, kind, outcome, 0, Some(reason), results)
         } else {
-            break_event(now, kind, reason.outcome(), 0, None, Vec::new())
+            break_event(now, active.phase, kind, reason.outcome(), 0, None, Vec::new())
         };
         fx.push(Effect::Log(with_via(ev, via)));
         return;
     }
     let shown_ms = (now - active.started).num_milliseconds();
-    let ev = break_event(now, kind, outcome, shown_ms, active.delayed_by, results);
+    let ev = break_event(now, active.phase, kind, outcome, shown_ms, active.delayed_by, results);
     fx.push(Effect::Log(with_via(ev, via)));
     fx.push(Effect::CloseOverlay);
 }
 
 fn end_day(state: &mut State, now: NaiveDateTime, ts: NaiveDateTime, auto: bool, fx: &mut Vec<Effect>) {
     state.ended_on = Some(now.date());
+    state.ended_ts = Some(ts);
     // Ending the day while a break is showing counts as dismissing it.
     finish_break(state, now, Outcome::Skipped, None, Via::Desktop, fx);
     fx.push(Effect::Log(Event::DayEnd { ts, auto }));
@@ -453,11 +617,12 @@ fn with_via(mut ev: Event, new: Via) -> Event {
 
 fn break_event(
     ts: NaiveDateTime,
+    phase: Phase,
     kind: BreakKind,
     outcome: Outcome,
     shown_ms: i64,
     delayed_by: Option<BlockReason>,
     exercises: Vec<ExerciseResult>,
 ) -> Event {
-    Event::Break { ts, kind, phase: Phase::Work, outcome, delayed_by, via: Via::Desktop, shown_ms, exercises }
+    Event::Break { ts, kind, phase, outcome, delayed_by, via: Via::Desktop, shown_ms, exercises }
 }

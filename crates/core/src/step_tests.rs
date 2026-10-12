@@ -2,7 +2,7 @@ use chrono::{Duration, NaiveDate, NaiveDateTime, Weekday};
 
 use crate::config::{Config, Exercise, MoveMode};
 use crate::event::{BlockReason, BreakKind, Event, Outcome};
-use crate::step::{control_body, next_break, parse_control, status_line, step, Effect, Input, Presence, State};
+use crate::step::{control_body, next_break, parse_control, status_line, step, Effect, Input, Presence, Reply, State};
 
 /// 2026-10-12 is a Monday; days 17 and 18 are Sat/Sun.
 fn at(day: u32, h: u32, m: u32, s: u32) -> NaiveDateTime {
@@ -20,6 +20,8 @@ struct Sim {
     last_id: u64,
     toasts: Vec<(String, String)>,
     pushes: Vec<(u64, String)>,
+    /// (title, sleep_button) for each push.
+    push_meta: Vec<(String, bool)>,
 }
 
 impl Sim {
@@ -42,7 +44,10 @@ impl Sim {
                 }
                 Effect::CloseOverlay => self.closed += 1,
                 Effect::Toast { title, body } => self.toasts.push((title, body)),
-                Effect::Push { id, message, .. } => self.pushes.push((id, message)),
+                Effect::Push { id, title, message, sleep_button } => {
+                    self.pushes.push((id, message));
+                    self.push_meta.push((title, sleep_button));
+                }
                 Effect::Log(ev) => self.events.push(ev),
             }
         }
@@ -531,11 +536,12 @@ fn ids_continue_from_the_seed_so_restarts_do_not_reuse_them() {
 
 #[test]
 fn control_messages_round_trip_and_garbage_is_rejected() {
-    assert_eq!(parse_control(&control_body(true, 42)), Some(Input::PhoneDone { id: 42 }));
-    assert_eq!(parse_control(&control_body(false, 7)), Some(Input::PhoneSkip { id: 7 }));
+    assert_eq!(parse_control(&control_body(Reply::Done, 42)), Some(Input::PhoneDone { id: 42 }));
+    assert_eq!(parse_control(&control_body(Reply::Skip, 7)), Some(Input::PhoneSkip { id: 7 }));
+    assert_eq!(parse_control(&control_body(Reply::Sleep, 9)), Some(Input::PhoneSleep));
     assert_eq!(parse_control(" done:5
 "), Some(Input::PhoneDone { id: 5 }));
-    for bad in ["", "done", "done:", "done:x", "sleep:1", "done:-1", "DONE:1", "done:1:2"] {
+    for bad in ["", "done", "done:", "done:x", "sleep:x", "sleep", "wake:1", "done:-1", "DONE:1", "done:1:2"] {
         assert_eq!(parse_control(bad), None, "{bad:?}");
     }
 }
@@ -695,6 +701,196 @@ fn status_line_and_next_break() {
     let mut sim = Sim::new();
     sim.tick(fri_evening, 3600, &[]);
     assert_eq!(status_line(&sim.state, &sim.cfg, fri_evening), "Done for the day · next: eye break Mon 08:20");
+}
+
+// ---- Off-hours and sleep -------------------------------------------------------------------
+
+fn off_sim() -> Sim {
+    let mut sim = Sim::new();
+    sim.cfg.offhours.enabled = true;
+    sim
+}
+
+fn json_of(e: &Event) -> serde_json::Value {
+    serde_json::to_value(e).unwrap()
+}
+
+fn sleeps(sim: &Sim) -> Vec<(NaiveDateTime, String)> {
+    sim.events
+        .iter()
+        .filter_map(|e| match json_of(e) {
+            v if v["type"] == "sleep" => {
+                let ts = v["ts"].as_str().unwrap().parse::<NaiveDateTime>().unwrap();
+                Some((ts, v["source"].as_str().unwrap().to_string()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn friday_evening_moves_hourly_until_quiet_after_then_auto_sleep_then_saturday_at_ten() {
+    let mut sim = off_sim();
+    sim.tick(at(16, 17, 9, 30), 0, &[]);
+    sim.tick(at(16, 17, 10, 0), 0, &[Input::DoneForDay]);
+    sim.run(at(16, 22, 30, 0), |_| 0, true);
+    assert_eq!(sim.shown_times(), ["16 18:00 Move", "16 19:00 Move", "16 20:00 Move", "16 21:00 Move"]);
+    assert_eq!(sleeps(&sim), [(at(16, 22, 0, 0), "auto".to_string())]);
+    let first_break = sim.events.iter().map(json_of).find(|v| v["type"] == "break").unwrap();
+    assert_eq!(first_break["phase"], "offhours");
+    // Saturday: the wake boundary 09:00 does not itself fire (like 08:00 on a work day); 10:00 does.
+    sim.run(at(17, 10, 30, 0), |_| 0, true);
+    assert_eq!(sim.shown_times().last().unwrap(), "17 10:00 Move");
+    assert_eq!(sim.shown_times().len(), 5);
+}
+
+#[test]
+fn offhours_is_off_by_default() {
+    let mut sim = Sim::new();
+    sim.tick(at(16, 17, 9, 30), 0, &[]);
+    sim.tick(at(16, 17, 10, 0), 0, &[Input::DoneForDay]);
+    sim.run(at(17, 12, 0, 0), |_| 0, true);
+    assert!(sim.shown.is_empty());
+    assert!(sleeps(&sim).is_empty(), "a disabled feature writes no sleep events");
+}
+
+#[test]
+fn weekends_are_offhours_from_weekend_start() {
+    let mut sim = off_sim();
+    sim.tick(at(17, 8, 30, 0), 0, &[]);
+    sim.run(at(17, 12, 30, 0), |_| 0, true);
+    assert_eq!(sim.shown_times(), ["17 10:00 Move", "17 11:00 Move", "17 12:00 Move"]);
+}
+
+#[test]
+fn offhours_eye_breaks_only_when_enabled() {
+    let mut sim = off_sim();
+    sim.cfg.offhours.eye = true;
+    sim.tick(at(17, 9, 30, 0), 0, &[]);
+    sim.run(at(17, 10, 30, 0), |_| 0, true);
+    assert_eq!(sim.shown_times(), ["17 09:40 Eye", "17 10:00 Move", "17 10:20 Eye"]);
+}
+
+#[test]
+fn sunday_night_sleep_wakes_for_monday_work() {
+    let mut sim = off_sim();
+    sim.tick(at(18, 21, 29, 30), 0, &[]);
+    sim.tick(at(18, 21, 30, 0), 0, &[Input::GoingToSleep]);
+    assert_eq!(sleeps(&sim), [(at(18, 21, 30, 0), "tray".to_string())]);
+    sim.run(at(19, 8, 21, 0), |_| 0, true);
+    assert_eq!(sim.shown_times(), ["19 08:20 Eye"]);
+}
+
+#[test]
+fn wake_boundaries() {
+    let cfg = Config::default();
+    assert_eq!(crate::step::wake_after(&cfg, at(16, 23, 0, 0)), at(17, 9, 0, 0)); // Fri night -> Sat 09:00
+    assert_eq!(crate::step::wake_after(&cfg, at(18, 23, 0, 0)), at(19, 8, 0, 0)); // Sun night -> Mon 08:00
+    assert_eq!(crate::step::wake_after(&cfg, at(17, 1, 0, 0)), at(17, 9, 0, 0)); // after midnight, same day
+    assert_eq!(crate::step::wake_after(&cfg, at(12, 6, 0, 0)), at(12, 8, 0, 0)); // early work-day morning
+}
+
+#[test]
+fn status_lines_for_offhours_and_sleep() {
+    let mut sim = off_sim();
+    sim.tick(at(16, 17, 9, 30), 0, &[]);
+    sim.tick(at(16, 17, 10, 0), 0, &[Input::DoneForDay]);
+    // Off-hours starts at day end on a work day.
+    sim.tick(at(16, 18, 30, 0), 0, &[]);
+    assert_eq!(status_line(&sim.state, &sim.cfg, at(16, 18, 30, 0)), "Off-hours · next: movement break 19:00");
+    sim.tick(at(16, 22, 1, 0), 0, &[]);
+    assert_eq!(status_line(&sim.state, &sim.cfg, at(16, 22, 1, 0)), "Sleep · next: movement break Sat 10:00");
+}
+
+#[test]
+fn tray_sleep_is_ignored_during_work_and_when_already_asleep() {
+    let mut sim = off_sim();
+    sim.tick(at(13, 13, 59, 30), 0, &[]);
+    sim.tick(at(13, 14, 0, 0), 0, &[Input::GoingToSleep, Input::PhoneSleep]);
+    assert!(sleeps(&sim).is_empty());
+
+    sim.tick(at(13, 17, 30, 0), 0, &[Input::DoneForDay]);
+    sim.tick(at(13, 17, 31, 0), 0, &[Input::GoingToSleep]);
+    sim.tick(at(13, 17, 32, 0), 0, &[Input::GoingToSleep, Input::PhoneSleep]);
+    assert_eq!(sleeps(&sim).len(), 1);
+}
+
+#[test]
+fn bedtime_is_logged_after_day_end_even_with_offhours_disabled() {
+    let mut sim = Sim::new();
+    sim.tick(at(13, 18, 59, 30), 0, &[]);
+    sim.tick(at(13, 19, 0, 0), 0, &[Input::DoneForDay]);
+    sim.tick(at(13, 23, 0, 0), 0, &[Input::GoingToSleep]);
+    assert_eq!(sleeps(&sim).len(), 1);
+}
+
+#[test]
+fn auto_sleep_never_predates_the_days_shutdown() {
+    // Still working at 22:00, goes idle at 22:10; the day auto-ends at 22:40.
+    let mut sim = off_sim();
+    sim.tick(at(16, 21, 59, 0), 0, &[]);
+    let idle = |t: NaiveDateTime| {
+        let left = at(16, 22, 10, 0);
+        if t > left { (t - left).num_seconds() as u64 } else { 0 }
+    };
+    sim.run(at(16, 22, 41, 0), idle, true);
+    assert_eq!(sleeps(&sim), [(at(16, 22, 10, 0), "auto".to_string())]);
+
+    // PC asleep 21:00-23:00: bedtime is the 22:00 backstop, not the 23:00 wake.
+    let mut sim = off_sim();
+    sim.tick(at(16, 21, 0, 0), 0, &[]);
+    sim.tick(at(16, 23, 0, 0), 0, &[]);
+    assert_eq!(sleeps(&sim), [(at(16, 22, 0, 0), "auto".to_string())]);
+}
+
+#[test]
+fn a_break_keeps_the_phase_it_started_in() {
+    let mut sim = off_sim();
+    sim.tick(at(16, 16, 59, 30), 0, &[]);
+    sim.run_with(at(16, 17, 1, 0), Presence::default()); // 17:00 work move shown
+    sim.tick(at(16, 17, 5, 0), 0, &[Input::DoneForDay]); // flushed after the day ended
+    let ev = sim.events.iter().map(json_of).find(|v| v["type"] == "break").unwrap();
+    assert_eq!((ev["outcome"].as_str(), ev["phase"].as_str()), (Some("skipped"), Some("work")));
+}
+
+#[test]
+fn manual_breaks_outside_work_log_as_offhours() {
+    let mut sim = Sim::new();
+    sim.tick(at(17, 8, 0, 0), 0, &[]);
+    sim.tick(at(17, 8, 0, 30), 0, &[Input::TakeBreak(BreakKind::Move)]);
+    let id = sim.last_id;
+    sim.tick(at(17, 8, 1, 0), 0, &[Input::BreakDone { id, reps: vec![] }]);
+    assert_eq!(json_of(sim.events.last().unwrap())["phase"], "offhours");
+}
+
+#[test]
+fn offhours_push_has_its_own_title_and_a_sleep_button() {
+    let mut sim = off_sim();
+    phone_ready(&mut sim);
+    sim.tick(at(17, 9, 59, 30), 0, &[]);
+    sim.run_with(at(17, 10, 1, 0), presence(|p| p.idle_secs = 600));
+    assert_eq!(sim.push_meta, [("Off-hours movement break".to_string(), true)]);
+
+    // A work-hours push has neither.
+    let mut sim = off_sim();
+    phone_ready(&mut sim);
+    hold_move(&mut sim, presence(|p| p.idle_secs = 600));
+    assert_eq!(sim.push_meta, [("Movement break".to_string(), false)]);
+}
+
+#[test]
+fn phone_sleep_ends_the_evening_and_flushes_the_pending_break() {
+    let mut sim = off_sim();
+    phone_ready(&mut sim);
+    sim.tick(at(17, 9, 59, 30), 0, &[]);
+    sim.run_with(at(17, 10, 1, 0), presence(|p| p.idle_secs = 600));
+    sim.tick(at(17, 10, 2, 0), 600, &[Input::PhoneSleep]);
+    assert_eq!(sleeps(&sim), [(at(17, 10, 2, 0), "phone".to_string())]);
+    assert_eq!(sim.outcomes(), [Outcome::Away], "the pending break is left unresolved");
+    sim.run(at(17, 14, 0, 0), |_| 0, true);
+    assert!(sim.shown.is_empty(), "no more reminders today");
+    sim.run(at(18, 10, 30, 0), |_| 0, true);
+    assert_eq!(sim.shown_times().last().unwrap(), "18 10:00 Move");
 }
 
 impl State {

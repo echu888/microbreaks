@@ -5,8 +5,8 @@ pub mod event;
 pub mod step;
 
 pub use config::Config;
-pub use event::{BlockReason, BreakKind, Event, Outcome};
-pub use step::{control_body, next_break, parse_control, status_line, step, BreakSpec, Effect, Input, Presence, State};
+pub use event::{BlockReason, BreakKind, Event, Outcome, Phase, SleepSource};
+pub use step::{control_body, next_break, parse_control, status_line, step, BreakSpec, Effect, Input, Presence, Reply, State};
 
 #[cfg(test)]
 mod step_tests;

@@ -48,6 +48,17 @@ impl BlockReason {
 #[serde(rename_all = "lowercase")]
 pub enum Phase {
     Work,
+    /// Also what breaks started outside the Work window (e.g. a manual break on a weekend morning) log.
+    Offhours,
+}
+
+/// Where a "going to sleep" came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SleepSource {
+    Phone,
+    Tray,
+    Auto,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -85,5 +96,10 @@ pub enum Event {
     },
     DayResume {
         ts: NaiveDateTime,
+    },
+    /// The user's Sleep phase begins (not the PC sleeping, which logs `asleep` breaks).
+    Sleep {
+        ts: NaiveDateTime,
+        source: SleepSource,
     },
 }

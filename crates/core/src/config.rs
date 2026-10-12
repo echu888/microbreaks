@@ -15,6 +15,7 @@ pub struct Config {
     pub suppress: Suppress,
     pub toasts: Toasts,
     pub ntfy: Ntfy,
+    pub offhours: Offhours,
 }
 
 impl Config {
@@ -121,6 +122,31 @@ pub struct Overlay {
 impl Default for Overlay {
     fn default() -> Self {
         Self { monitors: Monitors::All, opacity: 0.85, input_grace_ms: 1000 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Offhours {
+    pub enabled: bool,
+    /// Non-work days become Off-hours after this time.
+    #[serde(deserialize_with = "hhmm")]
+    pub weekend_start: NaiveTime,
+    /// Auto-sleep backstop. Must be after `weekend_start` and before midnight.
+    #[serde(deserialize_with = "hhmm")]
+    pub quiet_after: NaiveTime,
+    /// Eye breaks in Off-hours too (only when active at the PC).
+    pub eye: bool,
+}
+
+impl Default for Offhours {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            weekend_start: NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            quiet_after: NaiveTime::from_hms_opt(22, 0, 0).unwrap(),
+            eye: false,
+        }
     }
 }
 
