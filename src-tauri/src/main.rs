@@ -8,7 +8,7 @@ mod win32;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use microbreaks_core::{BreakKind, BreakSpec, Input};
+use microbreaks_core::{BlockReason, BreakKind, BreakSpec, Input};
 use serde::Serialize;
 use tauri::menu::{MenuBuilder, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -72,8 +72,9 @@ fn main() {
             // Debug builds only: trigger breaks on demand (also the focus-stealing spike).
             let test_eye = MenuItem::with_id(app, "test_eye", "Test eye break", true, None::<&str>)?;
             let test_move = MenuItem::with_id(app, "test_move", "Test movement break", true, None::<&str>)?;
+            let test_phone = MenuItem::with_id(app, "test_phone", "Test phone push (away)", true, None::<&str>)?;
             if cfg!(debug_assertions) {
-                menu = menu.separator().item(&test_eye).item(&test_move);
+                menu = menu.separator().item(&test_eye).item(&test_move).item(&test_phone);
             }
             let menu = menu.separator().item(&quit).build()?;
 
@@ -86,6 +87,7 @@ fn main() {
                         "day_toggle" => engine::toggle_day(app),
                         "test_eye" => engine::push(app, Input::TakeBreak(BreakKind::Eye)),
                         "test_move" => engine::push(app, Input::TakeBreak(BreakKind::Move)),
+                        "test_phone" => engine::push(app, Input::TakeHeldBreak(BlockReason::Away)),
                         "quit" => return app.exit(0),
                         _ => return,
                     }

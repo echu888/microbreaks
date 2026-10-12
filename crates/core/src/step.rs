@@ -31,6 +31,8 @@ pub enum Input {
     DoneForDay,
     Resume,
     TakeBreak(BreakKind),
+    /// Debug aid: start a movement break already held for `reason`, as if it came due while blocked.
+    TakeHeldBreak(BlockReason),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -139,6 +141,7 @@ pub fn step(
                 }
             }
             Input::TakeBreak(kind) => start_break(state, cfg, now, *kind, None, &mut fx),
+            Input::TakeHeldBreak(reason) => hold_movement_break(state, cfg, now, *reason, &mut fx),
         }
     }
 
@@ -179,20 +182,7 @@ pub fn step(
         if let Some((_, kind)) = due_slots(state, cfg, prev, now).pop() {
             match block_reason(cfg, presence, kind) {
                 None => start_break(state, cfg, now, kind, None, &mut fx),
-                Some(reason) if kind == BreakKind::Move => {
-                    start_break(state, cfg, now, kind, Some(reason), &mut fx);
-                    // Locked and away mean nobody is looking at the screen to read it.
-                    if matches!(reason, BlockReason::Meeting | BlockReason::Busy) {
-                        let body = format!(
-                            "{}. Will show when you're free, up to {} min.",
-                            reason_phrase(reason),
-                            cfg.movement.grace_mins
-                        );
-                        toast(cfg, "Movement break held", body, &mut fx);
-                    } else if cfg.ntfy.is_ready() {
-                        push_to_phone(state, reason, &mut fx);
-                    }
-                }
+                Some(reason) if kind == BreakKind::Move => hold_movement_break(state, cfg, now, reason, &mut fx),
                 Some(reason) => fx.push(Effect::Log(break_event(now, kind, reason.outcome(), 0, None, Vec::new()))),
             }
         }
@@ -318,6 +308,18 @@ fn reason_phrase(reason: BlockReason) -> &'static str {
         BlockReason::Asleep => "The PC was asleep",
         BlockReason::Meeting => "Camera or mic in use",
         BlockReason::Busy => "A fullscreen app or presentation was running",
+    }
+}
+
+/// Starts a movement break held for `reason`, and tells the user where it matters.
+fn hold_movement_break(state: &mut State, cfg: &Config, now: NaiveDateTime, reason: BlockReason, fx: &mut Vec<Effect>) {
+    start_break(state, cfg, now, BreakKind::Move, Some(reason), fx);
+    // Locked and away mean nobody is looking at the screen to read a toast; they get the phone instead.
+    if matches!(reason, BlockReason::Meeting | BlockReason::Busy) {
+        let body = format!("{}. Will show when you're free, up to {} min.", reason_phrase(reason), cfg.movement.grace_mins);
+        toast(cfg, "Movement break held", body, fx);
+    } else if cfg.ntfy.is_ready() {
+        push_to_phone(state, reason, fx);
     }
 }
 

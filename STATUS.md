@@ -28,6 +28,7 @@ _Last updated: 2026-10-12_
    - **Day end on lock/sleep:** after 17:00, lock the PC and check for an auto `day_end` at the last input time.
 4. Block-reason toasts are written on branch `block-toasts` (core tests pass, app builds) but the **toast display is unverified**: add `[toasts]` with `enabled = true` to `%APPDATA%\microbreaks\config.toml`, restart the new build, and trigger a meeting/busy hold, then let a pending break expire. Check the toast shows and what app name it uses. The release build now running predates this.
 5. M3 away buzzer is on branch `m3-ntfy`. To verify end to end: fill in `[ntfy]` in `%APPDATA%\microbreaks\config.toml` (`enabled = true`, your two topics), restart a fresh build (stop the running exe first, it locks the file), then sit idle past 2 min across the top of the hour. Expect a phone notification; tap Done and check `events.jsonl` for `"via":"phone"`. Also test Skip, and a tap after returning to the PC (overlay should close).
+   Debug builds have a tray item "Test phone push (away)" that triggers the push without waiting for a real idle break. Since you are at the PC, the held break shows its overlay on the next tick (the block has cleared), so a phone Done then closes the overlay; to test the pending path itself, go idle for 2+ min instead.
 6. M3 part two: Off-hours phase, "Going to sleep" action and `quiet_after` backstop.
 
 ## Known issues / risks

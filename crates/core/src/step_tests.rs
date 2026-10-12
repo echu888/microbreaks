@@ -475,6 +475,19 @@ fn phone_done_resolves_a_pending_break_with_targets_and_the_delay() {
 }
 
 #[test]
+fn a_debug_held_break_pushes_and_waits_for_the_phone() {
+    let mut sim = Sim::new();
+    phone_ready(&mut sim);
+    sim.tick(at(12, 10, 0, 0), 600, &[Input::TakeHeldBreak(BlockReason::Away)]);
+    assert!(sim.shown.is_empty());
+    assert_eq!(sim.pushes.len(), 1);
+    let id = sim.pushes[0].0;
+    sim.tick(at(12, 10, 0, 30), 600, &[Input::PhoneDone { id }]);
+    assert_eq!(sim.outcomes(), [Outcome::Done]);
+    assert_eq!(serde_json::to_value(sim.events.last().unwrap()).unwrap()["via"], "phone");
+}
+
+#[test]
 fn phone_skip_resolves_a_pending_break() {
     let mut sim = Sim::new();
     phone_ready(&mut sim);
