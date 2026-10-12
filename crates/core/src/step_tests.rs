@@ -893,6 +893,84 @@ fn phone_sleep_ends_the_evening_and_flushes_the_pending_break() {
     assert_eq!(sim.shown_times().last().unwrap(), "18 10:00 Move");
 }
 
+// ---- Pause ---------------------------------------------------------------------------------
+
+#[test]
+fn pause_drops_breaks_as_paused_then_resumes_by_itself() {
+    let mut sim = Sim::new();
+    sim.tick(at(12, 10, 4, 30), 0, &[]);
+    sim.tick(at(12, 10, 5, 0), 0, &[Input::Pause { mins: 30 }]); // until 10:35
+    sim.run_active(at(12, 11, 1, 0));
+    assert_eq!(sim.shown_times(), ["12 10:40 Eye", "12 11:00 Move"]);
+    assert_eq!(sim.outcomes(), [Outcome::Paused, Outcome::Replaced]); // 10:20 paused; 10:40 replaced by 11:00
+    let pause = sim.events.iter().map(json_of).find(|v| v["type"] == "pause").unwrap();
+    assert_eq!(pause["until"], "2026-10-12T10:35:00");
+}
+
+#[test]
+fn ending_a_pause_early_resumes_breaks_and_logs_it() {
+    let mut sim = Sim::new();
+    sim.tick(at(12, 10, 4, 30), 0, &[]);
+    sim.tick(at(12, 10, 5, 0), 0, &[Input::Pause { mins: 60 }]);
+    sim.tick(at(12, 10, 10, 0), 0, &[Input::EndPause]);
+    sim.run_active(at(12, 10, 21, 0));
+    assert_eq!(sim.shown_times(), ["12 10:20 Eye"]);
+    assert_eq!(sim.events.iter().map(json_of).filter(|v| v["type"] == "pause_end").count(), 1);
+    // Ending when no pause is running does nothing.
+    let n = sim.events.len();
+    sim.tick(at(12, 10, 22, 0), 0, &[Input::EndPause]);
+    assert_eq!(sim.events.len(), n);
+}
+
+#[test]
+fn starting_a_pause_dismisses_a_showing_break() {
+    let mut sim = Sim::new();
+    sim.tick(at(12, 8, 19, 30), 0, &[]);
+    sim.run_active(at(12, 8, 21, 0));
+    sim.tick(at(12, 8, 25, 0), 0, &[Input::Pause { mins: 30 }]);
+    assert_eq!(sim.outcomes(), [Outcome::Skipped]);
+    assert_eq!(sim.closed, 1);
+}
+
+#[test]
+fn a_paused_movement_break_is_neither_held_nor_pushed() {
+    let mut sim = Sim::new();
+    phone_ready(&mut sim);
+    sim.tick(at(12, 9, 29, 30), 0, &[]);
+    sim.tick(at(12, 9, 30, 0), 0, &[Input::Pause { mins: 60 }]);
+    sim.run_with(at(12, 10, 2, 0), presence(|p| p.idle_secs = 600)); // away at the 10:00 move
+    assert_eq!(sim.outcomes(), [Outcome::Paused, Outcome::Paused]); // 09:40 eye and 10:00 move
+    assert!(sim.pushes.is_empty());
+    assert!(sim.shown.is_empty());
+}
+
+#[test]
+fn taking_a_break_works_while_paused() {
+    let mut sim = Sim::new();
+    sim.tick(at(12, 10, 0, 0), 0, &[Input::Pause { mins: 60 }]);
+    sim.tick(at(12, 10, 1, 0), 0, &[Input::TakeBreak(BreakKind::Move)]);
+    assert_eq!(sim.shown_times(), ["12 10:01 Move"]);
+}
+
+#[test]
+fn zero_minute_pause_is_ignored() {
+    let mut sim = Sim::new();
+    sim.tick(at(12, 10, 0, 0), 0, &[Input::Pause { mins: 0 }]);
+    assert!(sim.events.is_empty());
+}
+
+#[test]
+fn status_line_shows_the_pause_and_the_next_break_after_it() {
+    let mut sim = Sim::new();
+    sim.tick(at(12, 10, 4, 30), 0, &[]);
+    sim.tick(at(12, 10, 5, 0), 0, &[Input::Pause { mins: 30 }]);
+    // Until 10:35, so the 10:20 break is skipped and 10:40 is next.
+    assert_eq!(status_line(&sim.state, &sim.cfg, at(12, 10, 6, 0)), "Paused until 10:35 · next: eye break 10:40");
+    assert_eq!(status_line(&sim.state, &sim.cfg, at(12, 10, 36, 0)), "Work · next: eye break 10:40");
+    assert!(sim.state.is_paused(at(12, 10, 6, 0)));
+    assert!(!sim.state.is_paused(at(12, 10, 36, 0)));
+}
+
 impl State {
     fn next_break_date(&self, cfg: &Config) -> Option<NaiveDateTime> {
         next_break(self, cfg, at(12, 17, 31, 0)).map(|(_, t)| t)
