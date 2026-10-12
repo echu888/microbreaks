@@ -1,9 +1,9 @@
-# microbreaks — spec (draft v0.2)
+# microbreaks — spec (draft v0.3)
 
 A small desktop app that enforces two habits during the work day:
 
 - **20-20-20 eye rule** — every 20 minutes, look at something 20 feet away for 20 seconds.
-- **Hourly squats** — on the hour, every hour, stand up and do squats.
+- **Hourly movement** — on the hour, every hour, stand up and exercise. Squats to start with; the list of exercises is configurable (e.g. squats + push-ups).
 
 Primary target is **Windows**. A phone companion (iOS / PWA) is a possible later phase.
 
@@ -16,7 +16,7 @@ Primary target is **Windows**. A phone companion (iOS / PWA) is a possible later
 
 ## Non-goals (for now)
 
-- Rep counting, exercise variety, or workout tracking.
+- Automatic rep counting (camera/sensors) or full workout tracking. Reps are self-reported.
 - Multi-user, cloud accounts, or syncing between devices.
 - Calendar integration (camera/mic detection covers most meetings).
 
@@ -26,9 +26,9 @@ Primary target is **Windows**. A phone companion (iOS / PWA) is a possible later
 
 - Breaks follow the **wall clock**, not a rolling timer.
   - Eye break at `:20` and `:40`.
-  - Squat break at `:00`. It also counts as the eye break for that slot.
+  - Movement break at `:00`. It also counts as the eye break for that slot.
 - **Work day:** Mon–Fri, 08:00–17:00 (configurable in the config file).
-  - First break of the day is 08:20 (eye); last is 17:00 (squat).
+  - First break of the day is 08:20 (eye); last is 17:00 (movement).
   - 08:00 does not fire, since the day is just starting.
 - **No backfill:** breaks that come due while the PC is asleep or locked are logged (`asleep` / `locked`) and are not shown later.
 - **One overlay at a time:** if a break is still on screen when the next one comes due, the old one is logged as `missed` and the new one takes its place. In practice this only matters when the user is away; see the idle rules below.
@@ -40,7 +40,10 @@ Primary target is **Windows**. A phone companion (iOS / PWA) is a possible later
 - Configurable later: `overlay.monitors = "all" | "active"`.
 - Content:
   - **Eye break:** "Look 20 ft away", with a 20 s countdown shown for guidance only.
-  - **Squat break:** "Squat time", with the configured rep target (e.g. "10 squats").
+  - **Movement break:** "Movement time". Shows one row per exercise for this break, each with a rep stepper prefilled with the target (e.g. `Squats [−] 15 [+]`).
+    - If you did the target, **Done** is still one click.
+    - Adjust a stepper only when the count differs, e.g. 10 instead of 15. Setting it to 0 means that exercise was skipped.
+    - Typing digits while focused edits the focused stepper; `Tab` moves between rows.
 - The overlay **does not auto-dismiss**. The user closes it with:
   - **Done** (button, or `Enter` / `Space` once the countdown finishes) → logged as `done`.
   - **Skip** (button, or **`Esc` pressed twice within 1 s**) → logged as `skipped`.
@@ -54,7 +57,7 @@ Checked at the moment a break comes due.
 
 | Condition | Detection (Windows) | Action |
 |---|---|---|
-| User idle ≥ 20 s (eye) / ≥ 2 min (squat) | `GetLastInputInfo` | Log `away`, no overlay |
+| User idle ≥ 20 s (eye) / ≥ 2 min (movement) | `GetLastInputInfo` | Log `away`, no overlay |
 | Session locked / screensaver | `WTSRegisterSessionNotification` / lock state | Log `locked`, no overlay |
 | PC asleep at break time | wake detection / clock jump | Log `asleep` |
 | Camera or mic in use (meeting) | `CapabilityAccessManager\ConsentStore` registry (see below) | Log `suppressed_meeting` |
@@ -62,7 +65,7 @@ Checked at the moment a break comes due.
 
 `away` and `locked` are kept separate from `done` so stats show breaks actually taken vs. merely away. These are also the triggers for the future phone buzzer (see below).
 
-Deferred squats (decide later): optionally re-offer a suppressed squat break once the meeting ends, if that happens within e.g. 15 min.
+Deferred movement breaks (decide later): optionally re-offer a suppressed movement break once the meeting ends, if that happens within e.g. 15 min.
 
 #### Camera/mic detection
 
@@ -109,7 +112,9 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentSt
 
 - Events are appended to `%APPDATA%\microbreaks\events.jsonl`.
 - Break events:
-  `{ "ts", "type": "break", "kind": "eye"|"squat", "outcome", "shown_ms" }`
+  `{ "ts", "type": "break", "kind": "eye"|"move", "outcome", "shown_ms", "exercises"? }`
+- `exercises` appears only on `move` breaks with outcome `done`. It records the target and the actual count per exercise, so partial sets show up in stats:
+  `"exercises": [{ "name": "squats", "target": 15, "reps": 15 }, { "name": "pushups", "target": 10, "reps": 6 }]`
 - Break outcomes:
 
   | outcome | meaning |
@@ -128,7 +133,7 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentSt
   - `{ "ts", "type": "day_resume" }`
 - Stats view (later):
   - Per day/week: done vs skipped vs away.
-  - Squat completion rate.
+  - Reps per exercise per day/week, and completion rate (reps vs target).
   - Shutdown time per day.
 
 ## Configuration
@@ -143,14 +148,22 @@ end   = "17:00"
 
 [eye]
 enabled        = true
-minutes        = [20, 40]     # wall-clock minutes; :00 is covered by squats
+minutes        = [20, 40]     # wall-clock minutes; :00 is covered by the movement break
 duration_secs  = 20
 idle_skip_secs = 20
 
-[squat]
+[move]
 enabled        = true
-reps           = 15
 idle_skip_secs = 120
+mode           = "all"        # "all": every exercise each break | "rotate": one exercise per break, cycling
+
+[[move.exercises]]
+name = "squats"
+reps = 15
+
+# [[move.exercises]]
+# name = "pushups"
+# reps = 10
 
 [heads_up]
 enabled = false
@@ -199,7 +212,7 @@ microbreaks/
 1. **M0 — Skeleton:** Tauri 2 project, tray icon with Quit, autostart, config file load with defaults.
 2. **M1 — Core loop (MVP):** *This is the version to start using daily.*
    - Wall-clock scheduler and work hours.
-   - Eye + squat overlays on all monitors.
+   - Eye + movement overlays on all monitors, with rep steppers.
    - Done / double-Esc skip.
    - Done for the day / Resume.
    - Event log.
@@ -220,10 +233,34 @@ The phone covers the two situations the desktop can't:
   - iOS does not allow interrupting overlays; time-sensitive notifications are the ceiling.
   - Needs a native iOS app (Tauri 2 mobile or Swift + shared `core`), because iOS PWAs can't schedule local notifications without a push server.
 - **AFK buzzer:** when a work-hours break resolves as `away` or `locked`, the desktop pushes the reminder to the phone instead.
+  - Explicit skips never buzz the phone.
   - Needs a way for the desktop to reach the phone, e.g. a tiny push relay or a service like ntfy/Pushover.
   - A Pushover/ntfy call from the desktop is the cheapest prototype and needs no phone app at all.
 
+### Day phases & sleep
+
+With the phone in the picture, the day has three phases. Each transition can happen on a schedule or by hand.
+
+| Phase | Who reminds | Ends when |
+|---|---|---|
+| **Work** | Desktop (+ AFK buzzer) | `day_end`: "Done for the day" or `workday.end` |
+| **Evening** | Phone only | `sleep`: "Going to sleep" or `evening.quiet_after` |
+| **Sleep** | Nobody | Next `workday.start` (or `evening.start` on non-work days) |
+
+- **Hard stop:** `quiet_after` (e.g. 22:00) is a backstop, so reminders never run all night even if you forget.
+- **Manual "Going to sleep":** a button or notification action on the phone ends the evening early. It logs a `sleep` event, giving bedtime stats next to shutdown-time stats.
+- **iOS Sleep Focus:** iOS already silences notifications during Sleep Focus, which protects the night for free. Reading Focus state (`INFocusStatusCenter`) only gives "a focus is on", not which one, so it's not worth using as a trigger.
+- Evening reminders are probably gentler than work ones, e.g. movement every 1–2 h with no eye breaks. That's to be decided with the phone phase.
+- Proposed config:
+
+```toml
+[evening]
+enabled       = false
+start         = "17:00"       # on non-work days, reminders start here
+quiet_after   = "22:00"
+```
+
 ## Open questions
 
-- Should a squat suppressed by a meeting be re-offered after it ends?
-- Should the AFK buzzer also fire when a break is skipped, or only for `away` / `locked`?
+- Should a movement break suppressed by a meeting be re-offered after it ends?
+- Evening schedule: which breaks, and how often?
