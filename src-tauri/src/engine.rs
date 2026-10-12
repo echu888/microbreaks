@@ -107,7 +107,14 @@ pub fn toggle_day(app: &AppHandle) {
 pub fn tick(app: &AppHandle) {
     let shared = app.state::<Shared>();
     let now = chrono::Local::now().naive_local();
-    let idle_secs = win32::idle_secs();
+    // Cloned so the probes (registry reads) run without holding the engine lock.
+    let suppress = shared.0.lock().unwrap().cfg.suppress.clone();
+    let presence = Presence {
+        idle_secs: win32::idle_secs(),
+        locked: win32::is_locked(),
+        meeting: suppress.camera_mic && win32::in_meeting(&suppress.ignore_mic_apps),
+        busy: suppress.fullscreen && win32::is_busy(),
+    };
 
     // Only touch engine state under the lock. Overlay and tray calls post work to the main
     // thread (which also takes this lock), so they run after the guard is dropped.
@@ -115,7 +122,7 @@ pub fn tick(app: &AppHandle) {
         let mut guard = shared.0.lock().unwrap();
         let e = &mut *guard;
         let inputs = std::mem::take(&mut e.inputs);
-        let fx = step(&mut e.state, &e.cfg, now, Presence { idle_secs }, &inputs);
+        let fx = step(&mut e.state, &e.cfg, now, presence, &inputs);
         for effect in &fx {
             match effect {
                 Effect::ShowOverlay(spec) => e.current = Some(spec.clone()),
