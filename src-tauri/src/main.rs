@@ -64,10 +64,9 @@ fn main() {
             }
 
             let header = MenuItem::with_id(app, "status", &status, false, None::<&str>)?;
-            let done_day = MenuItem::with_id(app, "done_day", "Done for the day", true, None::<&str>)?;
-            let resume = MenuItem::with_id(app, "resume", "Resume", true, None::<&str>)?;
+            let day_toggle = MenuItem::with_id(app, "day_toggle", "Done for the day", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let mut menu = MenuBuilder::new(app).item(&header).separator().item(&done_day).item(&resume);
+            let mut menu = MenuBuilder::new(app).item(&header).separator().item(&day_toggle);
             // Debug builds only: trigger breaks on demand (also the focus-stealing spike).
             let test_eye = MenuItem::with_id(app, "test_eye", "Test eye break", true, None::<&str>)?;
             let test_move = MenuItem::with_id(app, "test_move", "Test movement break", true, None::<&str>)?;
@@ -81,20 +80,18 @@ fn main() {
                 .tooltip(&status)
                 .menu(&menu)
                 .on_menu_event(|app, event| {
-                    let input = match event.id().as_ref() {
-                        "done_day" => Input::DoneForDay,
-                        "resume" => Input::Resume,
-                        "test_eye" => Input::TakeBreak(BreakKind::Eye),
-                        "test_move" => Input::TakeBreak(BreakKind::Move),
+                    match event.id().as_ref() {
+                        "day_toggle" => engine::toggle_day(app),
+                        "test_eye" => engine::push(app, Input::TakeBreak(BreakKind::Eye)),
+                        "test_move" => engine::push(app, Input::TakeBreak(BreakKind::Move)),
                         "quit" => return app.exit(0),
                         _ => return,
-                    };
-                    engine::push(app, input);
+                    }
                     engine::tick(app);
                 })
                 .build(app)?;
 
-            engine.tray_ui = Some(TrayUi { tray, header });
+            engine.tray_ui = Some(TrayUi { tray, header, day_toggle });
             app.manage(Shared(Mutex::new(engine)));
 
             let handle = app.handle().clone();

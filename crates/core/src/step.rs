@@ -54,6 +54,13 @@ pub struct State {
     rotate: usize,
 }
 
+impl State {
+    /// Whether the work day for `today` has ended, manually or automatically.
+    pub fn day_ended(&self, today: NaiveDate) -> bool {
+        self.ended_on == Some(today)
+    }
+}
+
 /// Advance the scheduler to `now` (local wall-clock time).
 pub fn step(
     state: &mut State,

@@ -15,6 +15,8 @@ use crate::{overlay, win32};
 pub struct TrayUi {
     pub tray: TrayIcon,
     pub header: MenuItem<tauri::Wry>,
+    /// "Done for the day" while the day is running, "Resume" once it has ended.
+    pub day_toggle: MenuItem<tauri::Wry>,
 }
 
 pub struct Engine {
@@ -24,7 +26,8 @@ pub struct Engine {
     /// The break whose overlay is up; overlay pages fetch this on load.
     pub current: Option<BreakSpec>,
     events_path: PathBuf,
-    status: String,
+    /// What the tray currently shows: status line and whether the day has ended.
+    shown: (String, bool),
     pub tray_ui: Option<TrayUi>,
 }
 
@@ -68,7 +71,7 @@ impl Engine {
             inputs: Vec::new(),
             current: None,
             events_path: dir.join("events.jsonl"),
-            status: String::new(),
+            shown: (String::new(), false),
             tray_ui: None,
         };
         (engine, first_run)
@@ -91,6 +94,15 @@ pub fn push(app: &AppHandle, input: Input) {
     app.state::<Shared>().0.lock().unwrap().inputs.push(input);
 }
 
+/// The tray's single day-end item: ends the day, or resumes it if it has already ended.
+pub fn toggle_day(app: &AppHandle) {
+    let today = chrono::Local::now().date_naive();
+    let shared = app.state::<Shared>();
+    let mut e = shared.0.lock().unwrap();
+    let input = if e.state.day_ended(today) { Input::Resume } else { Input::DoneForDay };
+    e.inputs.push(input);
+}
+
 /// Run one scheduler step and carry out its effects.
 pub fn tick(app: &AppHandle) {
     let shared = app.state::<Shared>();
@@ -111,12 +123,15 @@ pub fn tick(app: &AppHandle) {
                 Effect::Log(event) => e.log(event),
             }
         }
-        let status = status_line(&e.state, &e.cfg, now);
-        let changed = status != e.status;
+        let shown = (status_line(&e.state, &e.cfg, now), e.state.day_ended(now.date()));
+        let changed = shown != e.shown;
         if changed {
-            e.status = status.clone();
+            e.shown = shown.clone();
         }
-        let tray = changed.then(|| (e.tray_ui.as_ref().map(|u| (u.tray.clone(), u.header.clone())), status));
+        let tray = changed.then(|| {
+            let ui = e.tray_ui.as_ref();
+            (ui.map(|u| (u.tray.clone(), u.header.clone(), u.day_toggle.clone())), shown)
+        });
         (fx, e.cfg.clone(), tray)
     };
 
@@ -127,8 +142,9 @@ pub fn tick(app: &AppHandle) {
             Effect::Log(_) => {}
         }
     }
-    if let Some((Some((tray, header)), status)) = new_status {
+    if let Some((Some((tray, header, day_toggle)), (status, ended))) = new_status {
         let _ = header.set_text(&status);
         let _ = tray.set_tooltip(Some(&status));
+        let _ = day_toggle.set_text(if ended { "Resume" } else { "Done for the day" });
     }
 }
