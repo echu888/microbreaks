@@ -207,6 +207,17 @@ When enabled, a Windows toast explains why a break didn't happen, so "why didn't
 - **Action buttons:** notifications carry ntfy `http` action buttons that publish to the control topic: **Done**, **Skip**, and in Off-hours **Going to sleep**.
   - The desktop receives these and resolves the pending break (logged `via: "phone"`; reps = target) or enters the Sleep phase.
   - *Verified 2026-10-12: the iOS ntfy app runs `http` actions; the phone POSTs the action's `url` and `body` itself.* Fallback, if that ever stops working: a `view` action opening a tiny local-network page, or notifications without buttons plus the tray / `quiet_after` for sleep.
+- **Away buzzer:**
+  - Sent when a movement break is held for `away` or `locked` (never for `meeting` / `busy`, never for eye breaks), and only when `[ntfy]` is enabled with two valid, distinct topics (1-64 of letters, digits, `_`, `-`).
+  - The message lists the exercises and the reason. It has **Done** and **Skip** buttons, priority 4, and `clear: true` so a tap removes the notification.
+  - The pending break is resolved by the reply: `done` / `skipped` with `via: "phone"`, `delayed_by` set to the reason, reps equal to the targets, `shown_ms` 0. A reply for a break that is already on screen closes its overlay.
+- **Control messages:** the button body is `done:<id>` or `skip:<id>`. Anything else on the control topic is ignored.
+- **Break ids** seed from the clock at startup (epoch milliseconds), so a reply left over from an earlier run can never match a current break. A reply for any break that is no longer active is ignored.
+- **Listener:** a streaming `GET <server>/<control>/json?since=<last message id>`, starting from the startup time.
+  - Only `message` events count.
+  - The stream is reopened every 10 minutes and after any error, with exponential backoff (2 s to 60 s). That recovers silent drops after sleep, and `since` replays taps made in the gap.
+  - The client never logs URLs or underlying error text, because topics act as passwords.
+- Core never sees topics. It emits `Effect::Push { id, title, message }`; the app builds the JSON and URLs from config.
 - **Security:** anyone who learns the topic names could send fake Done/Sleep messages. That's acceptable for a personal tool. A reserved, password-protected topic (ntfy Pro or self-hosted) is the upgrade path.
 
 ## Tray

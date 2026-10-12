@@ -12,7 +12,7 @@ _Last updated: 2026-10-12_
 - [ ] M0 — Skeleton: Tauri 2 project, tray + Quit, autostart, config load. _Tray, status header and Quit verified. Autostart unverified: the config was created by a debug run, so the release build never saw `first_run` and didn't register the Run key._
 - [x] M1 — Core loop (MVP): focus spike first, then scheduler, overlays, day end, event log. _Verified by hand 2026-10-12: focus-stealing works (acts modal), overlay on both monitors, Done gated by countdown, event log written. Movement break / Esc Esc not exercised yet, assumed same path._
 - [ ] M2 — Smart suppression: lock / asleep / camera-mic / fullscreen, pending + grace. _Core + probes written; tick after the manual checks below._
-- [ ] M3 — Phone via ntfy: away buzzer, Off-hours, Going to sleep
+- [ ] M3 — Phone via ntfy: away buzzer, Off-hours, Going to sleep. _Away buzzer written (core tests + build); phone round trip unverified. Off-hours and Going to sleep not started._
 - [ ] M4 — Polish: pause, stats, heads-up toast, settings window
 - [ ] M5 — Distribution: signing, MSIX, Store
 
@@ -27,7 +27,8 @@ _Last updated: 2026-10-12_
    - **Asleep:** sleep the PC across a slot; events show `asleep` at the slot times.
    - **Day end on lock/sleep:** after 17:00, lock the PC and check for an auto `day_end` at the last input time.
 4. Block-reason toasts are written on branch `block-toasts` (core tests pass, app builds) but the **toast display is unverified**: add `[notify]` with `enabled = true` to `%APPDATA%\microbreaks\config.toml`, restart the new build, and trigger a meeting/busy hold, then let a pending break expire. Check the toast shows and what app name it uses. The release build now running predates this.
-5. M3 (phone via ntfy), on branch `m3-ntfy`. The iOS `http` action check is done; start with the core logic (Off-hours phase, push effects, Done/Skip/Sleep inputs), then the HTTP client and control-topic subscription.
+5. M3 away buzzer is on branch `m3-ntfy`. To verify end to end: fill in `[ntfy]` in `%APPDATA%\microbreaks\config.toml` (`enabled = true`, your two topics), restart a fresh build (stop the running exe first, it locks the file), then sit idle past 2 min across the top of the hour. Expect a phone notification; tap Done and check `events.jsonl` for `"via":"phone"`. Also test Skip, and a tap after returning to the PC (overlay should close).
+6. M3 part two: Off-hours phase, "Going to sleep" action and `quiet_after` backstop.
 
 ## Known issues / risks
 
@@ -37,6 +38,7 @@ _Last updated: 2026-10-12_
 - Overlay, tray and Win32 probes can only be tested on Windows. Cloud/Linux sessions can only test `crates/core`.
 - Remaining gaps: no config reload, no single-instance guard, one tray icon for all states (no pending badge yet), no phone push for away/locked pending breaks (M3).
 - The camera/mic registry scan runs every 2 s tick. Fine for now; probe only when a break is due if it ever matters.
+- A phone notification is not withdrawn when the break is resolved at the desktop (ntfy can replace or delete by sequence id; not done). A late tap is ignored.
 - An expired pending movement break is logged with the reason that held it first, not the last one.
 - The config file is only read at startup. An invalid file falls back to defaults (message on stderr only).
 
@@ -49,3 +51,4 @@ _Last updated: 2026-10-12_
 - 2026-10-12: M2 written: `Presence` snapshot, block priority, pending/grace for movement breaks, asleep via tick gap, `delayed_by`, lock/sleep day end, Win32 probes for lock, camera/mic and busy. 35 core tests pass, app builds. Probes await manual verification.
 - 2026-10-12: Block-reason toasts: `Effect::Notify`, `[notify]` config (off by default), `tauri-plugin-notification`. 38 core tests pass. Display unverified.
 - 2026-10-12: Verified on a real iPhone that an ntfy `http` action button POSTs to a second topic, which the PC saw. M3 design confirmed.
+- 2026-10-12: M3 away buzzer: `Effect::Push`, phone Done/Skip inputs, clock-seeded break ids, ureq-based ntfy publish and control-topic listener. 47 core tests pass, app builds. Phone round trip unverified.
