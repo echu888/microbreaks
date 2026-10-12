@@ -12,6 +12,10 @@ pub struct Config {
     #[serde(rename = "move")]
     pub movement: Movement,
     pub overlay: Overlay,
+    pub suppress: Suppress,
+    pub toasts: Toasts,
+    pub ntfy: Ntfy,
+    pub offhours: Offhours,
 }
 
 impl Config {
@@ -118,6 +122,90 @@ pub struct Overlay {
 impl Default for Overlay {
     fn default() -> Self {
         Self { monitors: Monitors::All, opacity: 0.85, input_grace_ms: 1000 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Offhours {
+    pub enabled: bool,
+    /// Non-work days become Off-hours after this time.
+    #[serde(deserialize_with = "hhmm")]
+    pub weekend_start: NaiveTime,
+    /// Auto-sleep backstop. Must be after `weekend_start` and before midnight.
+    #[serde(deserialize_with = "hhmm")]
+    pub quiet_after: NaiveTime,
+    /// Eye breaks in Off-hours too (only when active at the PC).
+    pub eye: bool,
+}
+
+impl Default for Offhours {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            weekend_start: NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            quiet_after: NaiveTime::from_hms_opt(22, 0, 0).unwrap(),
+            eye: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Ntfy {
+    pub enabled: bool,
+    pub server: String,
+    /// Desktop → phone.
+    pub alerts_topic: String,
+    /// Phone → desktop.
+    pub control_topic: String,
+}
+
+impl Default for Ntfy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            server: "https://ntfy.sh".into(),
+            alerts_topic: String::new(),
+            control_topic: String::new(),
+        }
+    }
+}
+
+impl Ntfy {
+    /// Enabled with two valid, distinct topics. Anything else means no phone traffic at all.
+    pub fn is_ready(&self) -> bool {
+        self.enabled
+            && valid_topic(&self.alerts_topic)
+            && valid_topic(&self.control_topic)
+            && self.alerts_topic != self.control_topic
+    }
+}
+
+/// ntfy topics are 1-64 characters of letters, digits, `_` and `-`.
+pub fn valid_topic(t: &str) -> bool {
+    (1..=64).contains(&t.len()) && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Toasts that explain why a movement break was held or missed.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(default)]
+pub struct Toasts {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Suppress {
+    pub camera_mic: bool,
+    pub fullscreen: bool,
+    /// Exe names the camera/mic probe skips (read by the Windows probe, not by core).
+    pub ignore_mic_apps: Vec<String>,
+}
+
+impl Default for Suppress {
+    fn default() -> Self {
+        Self { camera_mic: true, fullscreen: true, ignore_mic_apps: Vec::new() }
     }
 }
 

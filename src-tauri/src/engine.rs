@@ -8,8 +8,9 @@ use microbreaks_core::{status_line, step, BreakSpec, Config, Effect, Event, Inpu
 use tauri::menu::MenuItem;
 use tauri::tray::TrayIcon;
 use tauri::{AppHandle, Manager};
+use tauri_plugin_notification::NotificationExt;
 
-use crate::{overlay, win32};
+use crate::{ntfy, overlay, win32};
 
 /// Tray widgets that mirror the status line.
 pub struct TrayUi {
@@ -66,7 +67,12 @@ impl Engine {
         let dir = data_dir();
         let (cfg, first_run) = load_config(&dir);
         let engine = Engine {
-            state: State::default(),
+            // Phone replies carry break ids, so seed them from the clock to stay unique across restarts.
+            state: State::new(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_millis() as u64),
+            ),
             cfg,
             inputs: Vec::new(),
             current: None,
@@ -107,7 +113,14 @@ pub fn toggle_day(app: &AppHandle) {
 pub fn tick(app: &AppHandle) {
     let shared = app.state::<Shared>();
     let now = chrono::Local::now().naive_local();
-    let idle_secs = win32::idle_secs();
+    // Cloned so the probes (registry reads) run without holding the engine lock.
+    let suppress = shared.0.lock().unwrap().cfg.suppress.clone();
+    let presence = Presence {
+        idle_secs: win32::idle_secs(),
+        locked: win32::is_locked(),
+        meeting: suppress.camera_mic && win32::in_meeting(&suppress.ignore_mic_apps),
+        busy: suppress.fullscreen && win32::is_busy(),
+    };
 
     // Only touch engine state under the lock. Overlay and tray calls post work to the main
     // thread (which also takes this lock), so they run after the guard is dropped.
@@ -115,11 +128,12 @@ pub fn tick(app: &AppHandle) {
         let mut guard = shared.0.lock().unwrap();
         let e = &mut *guard;
         let inputs = std::mem::take(&mut e.inputs);
-        let fx = step(&mut e.state, &e.cfg, now, Presence { idle_secs }, &inputs);
+        let fx = step(&mut e.state, &e.cfg, now, presence, &inputs);
         for effect in &fx {
             match effect {
                 Effect::ShowOverlay(spec) => e.current = Some(spec.clone()),
                 Effect::CloseOverlay => e.current = None,
+                Effect::Toast { .. } | Effect::Push { .. } => {}
                 Effect::Log(event) => e.log(event),
             }
         }
@@ -139,6 +153,16 @@ pub fn tick(app: &AppHandle) {
         match effect {
             Effect::ShowOverlay(spec) => overlay::show(app, &cfg, spec.id),
             Effect::CloseOverlay => overlay::close(app),
+            Effect::Push { id, title, message, sleep_button } => {
+                // Off the tick thread: the request can take seconds.
+                let ntfy_cfg = cfg.ntfy.clone();
+                std::thread::spawn(move || ntfy::publish(&ntfy_cfg, id, &title, &message, sleep_button));
+            }
+            Effect::Toast { title, body } => {
+                if let Err(e) = app.notification().builder().title(title).body(body).show() {
+                    eprintln!("microbreaks: could not show notification: {e}");
+                }
+            }
             Effect::Log(_) => {}
         }
     }

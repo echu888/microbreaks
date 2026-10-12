@@ -1,13 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod engine;
+mod ntfy;
 mod overlay;
 mod win32;
 
 use std::sync::Mutex;
 use std::time::Duration;
 
-use microbreaks_core::{BreakKind, BreakSpec, Input};
+use microbreaks_core::{BlockReason, BreakKind, BreakSpec, Input};
 use serde::Serialize;
 use tauri::menu::{MenuBuilder, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -52,6 +53,7 @@ async fn break_skip(app: AppHandle, id: u64) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![current_break, break_done, break_skip])
         .setup(|app| {
             let (mut engine, first_run) = Engine::load();
@@ -65,13 +67,15 @@ fn main() {
 
             let header = MenuItem::with_id(app, "status", &status, false, None::<&str>)?;
             let day_toggle = MenuItem::with_id(app, "day_toggle", "Done for the day", true, None::<&str>)?;
+            let sleep = MenuItem::with_id(app, "sleep", "Going to sleep", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let mut menu = MenuBuilder::new(app).item(&header).separator().item(&day_toggle);
+            let mut menu = MenuBuilder::new(app).item(&header).separator().item(&day_toggle).item(&sleep);
             // Debug builds only: trigger breaks on demand (also the focus-stealing spike).
             let test_eye = MenuItem::with_id(app, "test_eye", "Test eye break", true, None::<&str>)?;
             let test_move = MenuItem::with_id(app, "test_move", "Test movement break", true, None::<&str>)?;
+            let test_phone = MenuItem::with_id(app, "test_phone", "Test phone push (away)", true, None::<&str>)?;
             if cfg!(debug_assertions) {
-                menu = menu.separator().item(&test_eye).item(&test_move);
+                menu = menu.separator().item(&test_eye).item(&test_move).item(&test_phone);
             }
             let menu = menu.separator().item(&quit).build()?;
 
@@ -82,14 +86,22 @@ fn main() {
                 .on_menu_event(|app, event| {
                     match event.id().as_ref() {
                         "day_toggle" => engine::toggle_day(app),
+                        "sleep" => engine::push(app, Input::GoingToSleep),
                         "test_eye" => engine::push(app, Input::TakeBreak(BreakKind::Eye)),
                         "test_move" => engine::push(app, Input::TakeBreak(BreakKind::Move)),
+                        "test_phone" => engine::push(app, Input::TakeHeldBreak(BlockReason::Away)),
                         "quit" => return app.exit(0),
                         _ => return,
                     }
                     engine::tick(app);
                 })
                 .build(app)?;
+
+            if engine.cfg.ntfy.is_ready() {
+                ntfy::spawn_subscriber(app.handle().clone(), engine.cfg.ntfy.clone());
+            } else if engine.cfg.ntfy.enabled {
+                eprintln!("microbreaks: [ntfy] is enabled but needs two different topics (1-64 letters, digits, _ or -)");
+            }
 
             engine.tray_ui = Some(TrayUi { tray, header, day_toggle });
             app.manage(Shared(Mutex::new(engine)));

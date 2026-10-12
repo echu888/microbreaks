@@ -36,6 +36,9 @@ Primary target is **Windows**.
 | **Sleep** | after `sleep` | none | next morning: `workday.start`, or `offhours.weekend_start` on non-work days |
 
 - **Weekends** (any non-work day) are Off-hours all day, from `weekend_start` (default 09:00) to `sleep`.
+- **Off-hours is opt-in** (`offhours.enabled`, off by default). With it off, nothing runs after the work day or on weekends, and no `sleep` events are written automatically.
+- **Exact schedule.** Off-hours breaks fire at `:00` only, after the phase starts and before `quiet_after` (the start itself does not fire, like 08:00 on a work day, so a Saturday's first break is 10:00 with the default `weekend_start`). Eye breaks fire at the eye minutes only if `offhours.eye` is on. On a work day the phase starts at `day_end`, even a manual early "Done for the day".
+- **Two kinds of sleep.** The user's **Sleep phase** (this section, event type `sleep`) is unrelated to the PC sleeping, which only produces `asleep` break outcomes.
 - **Pause** is a temporary overlay on any phase (tray "Pause for 30 min / 1 h"). It resumes automatically.
 
 ### Phase vs. presence
@@ -62,6 +65,8 @@ What the user sees is **phase + presence + next break**, e.g. "Work · next: eye
 - **Automatic (overtime-aware):** breaks continue normally past `workday.end` for as long as you're active.
   - The day ends at the first idle period of `overtime_idle_mins` or more (default 30), or when the PC locks or sleeps, after `workday.end`.
   - The logged timestamp is the **start** of that idle period, i.e. your real shutdown time.
+- **Lock or sleep:** a lock that starts after `workday.end` ends the day at the last input before the lock. A sleep that starts after `workday.end` ends it at the last tick before the sleep.
+- **Lock or sleep that spans `workday.end`** (started before, still going or ended after) does not end the day by itself, so a coffee run at 16:50 doesn't kill overtime breaks. After a long lock the idle rule still applies.
 - **Resume:** the tray "Resume" undoes it and logs `day_resume`.
 
 ### Going to sleep (`sleep`)
@@ -69,7 +74,12 @@ What the user sees is **phase + presence + next break**, e.g. "Work · next: eye
 - **Manual:**
   - A **"Going to sleep"** action button on every Off-hours phone notification (see ntfy below).
   - The same item in the tray.
-- **Backstop:** `offhours.quiet_after` (default 22:00). Reminders never run all night.
+- **Backstop:** `offhours.quiet_after` (default 22:00). Reminders never run all night. Only when Off-hours is enabled and active. `quiet_after` must be after `weekend_start` and before midnight; a value past midnight is not supported.
+- **Bedtime timestamp:** manual sleeps log the moment of the request. The auto backstop logs `quiet_after`, but never earlier than that day's `day_end` timestamp. So someone still working at 22:00 whose day ends at 22:10 logs 22:10, and a PC that slept from 21:00 to 23:00 logs 22:00, not the 23:00 wake.
+- **Wake time:** the first morning after the bedtime: `workday.start` if that day is a work day, otherwise `weekend_start`. Fri 23:00 wakes Sat 09:00; Sun 23:00 wakes Mon 08:00; Sat 01:00 wakes Sat 09:00.
+- **Manual sleep is ignored during Work, and when already asleep** (tray and phone alike). Otherwise a misclick at 14:00 would silence the rest of the day with nothing to undo it. After `day_end` it is always allowed, even with Off-hours disabled, so bedtime stats still work.
+- **Going to sleep flushes the current break** like ending the day: a showing break counts as skipped, a pending one is logged with the reason that held it.
+- **No persistence yet:** the Sleep phase, like `day_end`, lives in memory, so restarting the app brings reminders back.
 - The logged timestamp gives bedtime stats next to shutdown-time stats.
 
 ### Off-hours limitations
@@ -115,7 +125,10 @@ Due ──► Blocked? ──no──► Showing ──► done / skipped / repl
 | `meeting`: camera or mic in use | `ConsentStore` registry (below) | logged, dropped | pending, no push |
 | `busy`: fullscreen / presentation / Focus mode | `SHQueryUserNotificationState` | logged, dropped | pending, no push |
 
+- **Priority** when several apply: `asleep` > `locked` > `meeting` > `busy` > `away`. Someone on a call or watching fullscreen video is usually idle too, and must not count as away (M3 would buzz their phone while they sit at the PC).
+- **Asleep:** a gap of more than 60 s between ticks. Every slot in the gap is logged `asleep` (eye and movement), timestamped at the **slot time**, not the wake time. Nothing is shown on wake.
 - **Grace window:** a pending movement break is shown as soon as the block clears, if that happens within `move.grace_mins` (default 15).
+- **Pending breaks end three ways:** shown (block cleared in time), logged with the block reason (grace expired, or the day ended), or `replaced` by the next break that actually starts. An eye break that is dropped does not replace a pending movement break.
 - **Delays are recorded:** a break that was held and then done is logged as `outcome: "done", delayed_by: "meeting"`.
 - **No phone push when:**
   - the break was **explicitly skipped**;
@@ -132,10 +145,19 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentSt
 
 - There is one subkey per app; desktop apps sit under `NonPackaged`.
 - A device is **in use** when some app has `LastUsedTimeStop == 0` (with a non-zero `LastUsedTimeStart`).
+- `NonPackaged` subkey names are exe paths with `#` for `\` (`C:#Program Files#Zoom#Zoom.exe`). `ignore_mic_apps` matches the last segment, case-insensitively, for the microphone only.
 - Reading these keys needs no special permissions.
 - Caveats:
   - The key is undocumented, but it has been stable since Win10 1903 and backs the privacy tray icon.
   - Some apps keep the mic open while idle, so there's a config ignore list.
+
+#### Busy detection
+
+`SHQueryUserNotificationState` counts as busy for `QUNS_BUSY`, `QUNS_RUNNING_D3D_FULL_SCREEN` and `QUNS_PRESENTATION_MODE`. `QUNS_NOT_PRESENT` is ignored (the lock probe covers it). `QUNS_QUIET_TIME` and `QUNS_APP` are deliberately not used: as documented they don't clearly mean Focus assist or fullscreen, and a false "busy" silently loses breaks. **Focus mode is therefore not detected yet.** The probe reports not busy while the foreground window belongs to our own process, because the break overlay is itself fullscreen.
+
+#### Locked detection
+
+Polled each tick via `WTSQuerySessionInformationW(WTSSessionInfoEx)`, reading `SessionFlags` (0 = locked). No message window is needed.
 
 ### The break overlay
 
@@ -166,6 +188,17 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentSt
 - When enabled, a Windows toast appears N seconds before each overlay ("Eye break in 10 s").
 - Disabled by default, since it may be noisy.
 
+### Block notifications (optional)
+
+When enabled, a Windows toast explains why a break didn't happen, so "why didn't my squat break show?" has an answer without opening `events.jsonl`. It is also the easiest way to see what each probe is doing.
+
+- **Movement break held for `meeting` or `busy`:** "Movement break held: Camera or mic in use. Will show when you're free, up to 15 min."
+- **Pending break expires, for any reason:** "Movement break missed: The PC was locked for the whole 15 min grace window." This one stays in the Action Center, so you see it even if you were away.
+- **No toast for:** a break held for `locked` or `away` (nobody is looking at the screen), dropped eye breaks (too frequent), or `asleep`.
+- Setting is `[toasts] enabled`. Config is only read at startup, so restart after editing it.
+- Unpackaged builds show toasts under a generic app name; the proper name arrives with MSIX (M5).
+- Core emits `Effect::Toast { title, body }`; the app shows it. Disabled by default, like the heads-up toast.
+
 ## Phone via ntfy
 
 [ntfy](https://ntfy.sh) is a free, open-source pub/sub notification service.
@@ -181,7 +214,19 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentSt
   - `control`: phone → desktop. The desktop keeps a streaming subscription (`GET /<topic>/json`).
 - **Action buttons:** notifications carry ntfy `http` action buttons that publish to the control topic: **Done**, **Skip**, and in Off-hours **Going to sleep**.
   - The desktop receives these and resolves the pending break (logged `via: "phone"`; reps = target) or enters the Sleep phase.
-  - *Verify early in M3 that the iOS ntfy app supports `http` actions.* Fallback: a `view` action opening a tiny local-network page, or notifications without buttons plus the tray / `quiet_after` for sleep.
+  - *Verified 2026-10-12: the iOS ntfy app runs `http` actions; the phone POSTs the action's `url` and `body` itself.* Fallback, if that ever stops working: a `view` action opening a tiny local-network page, or notifications without buttons plus the tray / `quiet_after` for sleep.
+- **Away buzzer:**
+  - Sent when a movement break is held for `away` or `locked` (never for `meeting` / `busy`, never for eye breaks), and only when `[ntfy]` is enabled with two valid, distinct topics (1-64 of letters, digits, `_`, `-`).
+  - The message lists the exercises and the reason. It has **Done** and **Skip** buttons, priority 4, and `clear: true` so a tap removes the notification.
+  - The pending break is resolved by the reply: `done` / `skipped` with `via: "phone"`, `delayed_by` set to the reason, reps equal to the targets, `shown_ms` 0. A reply for a break that is already on screen closes its overlay.
+- **Control messages:** the button body is `done:<id>`, `skip:<id>` or `sleep:<id>`. Anything else on the control topic is ignored. `sleep` doesn't depend on the break still being active, so tapping it after resolving the break at the desktop works; it is ignored during Work or when already asleep.
+- **Off-hours pushes** are titled "Off-hours movement break" and add the "Going to sleep" button (three buttons, ntfy's maximum). Work pushes keep the plain title and two buttons.
+- **Break ids** seed from the clock at startup (epoch milliseconds), so a reply left over from an earlier run can never match a current break. A reply for any break that is no longer active is ignored.
+- **Listener:** a streaming `GET <server>/<control>/json?since=<last message id>`, starting from the startup time.
+  - Only `message` events count.
+  - The stream is reopened every 10 minutes and after any error, with exponential backoff (2 s to 60 s). That recovers silent drops after sleep, and `since` replays taps made in the gap.
+  - The client never logs URLs or underlying error text, because topics act as passwords.
+- Core never sees topics. It emits `Effect::Push { id, title, message }`; the app builds the JSON and URLs from config.
 - **Security:** anyone who learns the topic names could send fake Done/Sleep messages. That's acceptable for a personal tool. A reserved, password-protected topic (ntfy Pro or self-hosted) is the upgrade path.
 
 ## Tray
@@ -204,7 +249,7 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentSt
 Events are appended to `%APPDATA%\microbreaks\events.jsonl`. That's about 30 lines a day, so no database is needed.
 
 - `ts` is local wall-clock time without an offset (`2026-10-12T08:20:00`), matching the wall-clock scheduler. Ambiguous only during the repeated DST hour.
-- M1 omits `delayed_by` and only logs the outcomes `done`, `skipped`, `away` (eye breaks only) and `replaced`; the rest arrive with M2.
+- `delayed_by` is `null` unless a held movement break was shown later and then resolved.
 
 **Break events:**
 
@@ -233,6 +278,7 @@ Events are appended to `%APPDATA%\microbreaks\events.jsonl`. That's about 30 lin
 - `{ "ts", "type": "day_end", "auto": bool }`, where `ts` is the real shutdown time.
 - `{ "ts", "type": "day_resume" }`
 - `{ "ts", "type": "sleep", "source": "phone"|"tray"|"auto" }`
+- A break's `phase` is the phase it **started** in and does not change if it is flushed or expires later. Gap logs (`asleep`) use each slot's own phase. A break started outside the schedule (a manual "take a break" on a weekend morning, say) logs `offhours`: anything that isn't Work does.
 
 **Stats view (later):**
 
@@ -281,6 +327,9 @@ eye           = false          # eye breaks in Off-hours when active at the PC
 enabled = false
 secs    = 10
 
+[toasts]
+enabled = false                # toast when a movement break is held or missed, with the reason
+
 [overlay]
 monitors       = "all"         # "all" | "active"
 opacity        = 0.85
@@ -314,10 +363,11 @@ microbreaks/
   - Effects are things like show overlay, push to phone, or write event.
   - This handles PC sleep, DST, clock changes and config reloads uniformly.
   - A gap between ticks larger than ~1 min means the PC was asleep, and the breaks due in that gap are logged `asleep`.
+- **Probe cost:** the camera/mic registry scan runs every tick (a few dozen key reads). If that shows up in profiling, probe only when a break is due or pending.
 - **`core` stays platform-free and fully unit-tested**, including a simulated full day.
   - A future native phone app could reuse it via uniffi, or a PWA via wasm.
 - **Platform traits keep the scheduler testable with fakes:**
-  - `Presence`: `idle_secs()`, `is_locked()`, `in_meeting()`, `is_busy()`.
+  - `Presence`: a plain snapshot struct (`idle_secs`, `locked`, `meeting`, `busy`) filled by the Windows probes each tick and passed to `step`. Core never calls the OS.
   - `Notifier`: the ntfy publish/subscribe.
 - **Overlay windows:** one webview window per monitor, created at break time and destroyed afterwards.
   - If creation is noticeably slow, pre-create them hidden.
@@ -347,7 +397,7 @@ Current progress is tracked in [STATUS.md](STATUS.md).
 4. **M3 — Phone via ntfy:**
    - Away buzzer with Done/Skip actions.
    - Off-hours phase (weekday evenings + weekends) and Going to sleep.
-   - First, verify iOS `http` actions.
+   - iOS `http` actions are verified.
 5. **M4 — Polish:**
    - Pause and "take a break now".
    - Today's stats.
