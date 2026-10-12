@@ -1,17 +1,22 @@
-# microbreaks — spec (draft v0.3)
+# microbreaks — spec (draft v0.4)
 
-A small desktop app that enforces two habits during the work day:
+A small desktop app that enforces two habits:
 
 - **20-20-20 eye rule** — every 20 minutes, look at something 20 feet away for 20 seconds.
 - **Hourly movement** — on the hour, every hour, stand up and exercise. Squats to start with; the list of exercises is configurable (e.g. squats + push-ups).
 
-Primary target is **Windows**. A phone companion (iOS / PWA) is a possible later phase.
+Primary target is **Windows**.
+- The phone is reached through push notifications ([ntfy](https://ntfy.sh)), so no phone app is needed at first.
+- A native phone app is a possible later phase.
 
 ## Goals
 
-- Interrupt firmly enough that breaks actually happen, but **never lock the user out** — one keypress gets back to work.
-- Zero-effort when not needed: stay quiet in meetings, fullscreen apps, and when the user is already away from the keyboard.
-- Record what happened to each break (done / skipped / away / …) for accurate stats, plus when the day was shut down.
+- Interrupt firmly enough that breaks actually happen, but **never lock the user out**.
+- Zero-effort when not needed:
+  - Stay quiet in meetings and fullscreen apps.
+  - Hold movement breaks until you're back.
+  - Follow you to your phone when you're away.
+- Record what happened to each break for accurate stats, plus when the work day ended and when you went to sleep.
 - Small, low-resource, starts with Windows, lives in the tray.
 
 ## Non-goals (for now)
@@ -20,142 +25,216 @@ Primary target is **Windows**. A phone companion (iOS / PWA) is a possible later
 - Multi-user, cloud accounts, or syncing between devices.
 - Calendar integration (camera/mic detection covers most meetings).
 
-## Behaviour
+## Day phases
+
+| Phase | Breaks | Delivered by | Ends when |
+|---|---|---|---|
+| **Work** | eye + movement | Desktop overlay; phone push if away | `day_end` (see below) |
+| **Evening** | movement (eye optional) | Desktop overlay if active at PC, else phone push | `sleep` (see below) |
+| **Sleep** | none | — | next `workday.start` (or `evening.start` on non-work days) |
+
+### Ending the work day (`day_end`)
+
+- **Manual:** tray "Done for the day".
+- **Automatic (overtime-aware):** breaks continue normally past `workday.end` for as long as you're active.
+  - The day ends at the first idle period of `overtime_idle_mins` or more (default 30), or when the PC locks or sleeps, after `workday.end`.
+  - The logged timestamp is the **start** of that idle period, i.e. your real shutdown time.
+- **Resume:** the tray "Resume" undoes it and logs `day_resume`.
+
+### Going to sleep (`sleep`)
+
+- **Manual:**
+  - A **"Going to sleep"** action button on every evening phone notification (see ntfy below).
+  - The same item in the tray.
+- **Backstop:** `evening.quiet_after` (default 22:00). Reminders never run all night.
+- The logged timestamp gives bedtime stats next to shutdown-time stats.
+
+### Evening limitations
+
+- Evening reminders come from the desktop app, so the PC must be on (usually true).
+- If the PC is off or asleep, there are no evening reminders. This is accepted for now; fixing it needs a native phone app (see Future).
+- iOS Sleep Focus silences notifications anyway, which is a free extra safety net.
+
+## Breaks
 
 ### Schedule
 
-- Breaks follow the **wall clock**, not a rolling timer.
+- Breaks follow the **wall clock**:
   - Eye break at `:20` and `:40`.
   - Movement break at `:00`. It also counts as the eye break for that slot.
-- **Work day:** Mon–Fri, 08:00–17:00 (configurable in the config file).
-  - First break of the day is 08:20 (eye); last is 17:00 (movement).
-  - 08:00 does not fire, since the day is just starting.
-- **No backfill:** breaks that come due while the PC is asleep or locked are logged (`asleep` / `locked`) and are not shown later.
-- **One overlay at a time:** if a break is still on screen when the next one comes due, the old one is logged as `missed` and the new one takes its place. In practice this only matters when the user is away; see the idle rules below.
+- **Work day:** Mon–Fri, starting 08:00.
+  - First break is 08:20; 08:00 does not fire.
+  - Breaks continue past 17:00 until `day_end`.
+- **Evening:** movement breaks at `:00` from `day_end` to `sleep` (frequency is an open question).
+- **One break at a time:** a newly due break replaces any pending or showing one. The old one is logged `replaced`.
 
-### The break overlay
+### Break lifecycle
 
-- A borderless, always-on-top, semi-transparent dim window on **every monitor**. Looking away from all screens is the point.
-- The **primary panel** (message, countdown, buttons) appears only on the monitor that has the mouse cursor. The other monitors are just dimmed.
-- Configurable later: `overlay.monitors = "all" | "active"`.
-- Content:
-  - **Eye break:** "Look 20 ft away", with a 20 s countdown shown for guidance only.
-  - **Movement break:** "Movement time". Shows one row per exercise for this break, each with a rep stepper prefilled with the target (e.g. `Squats [−] 15 [+]`).
-    - If you did the target, **Done** is still one click.
-    - Adjust a stepper only when the count differs, e.g. 10 instead of 15. Setting it to 0 means that exercise was skipped.
-    - Typing digits while focused edits the focused stepper; `Tab` moves between rows.
-- The overlay **does not auto-dismiss**. The user closes it with:
-  - **Done** (button, or `Enter` / `Space` once the countdown finishes) → logged as `done`.
-  - **Skip** (button, or **`Esc` pressed twice within 1 s**) → logged as `skipped`.
-    - The first `Esc` shows a hint: "Press Esc again to skip". This stops accidental skips while typing.
-- The overlay takes keyboard focus when it appears, so `Esc` works straight away.
-- Alt-Tab, the Windows key, etc. are not blocked.
+```
+Due ──► Blocked? ──no──► Showing ──► done / skipped / replaced
+           │
+          yes
+           ▼
+         eye:  logged with the block reason, dropped
+         move: Pending ──(clears within grace)──► Showing
+                  │
+                  ├──(Done/Skip on phone)──► done / skipped  (via: phone)
+                  └──(grace expires)───────► logged with the block reason
+```
 
-### Smart suppression
+**Block reasons**, checked when a break comes due:
 
-Checked at the moment a break comes due.
+| Reason | Detection (Windows) | Eye break | Movement break |
+|---|---|---|---|
+| `away`: idle ≥ 20 s (eye) / ≥ 2 min (move) | `GetLastInputInfo` | logged, dropped (eyes already rested) | pending + **phone push** |
+| `locked` | session lock state / `WTSRegisterSessionNotification` | logged, dropped | pending + **phone push** |
+| `asleep`: PC was asleep at break time | tick gap (see Scheduler) | logged on wake | logged on wake, no push |
+| `meeting`: camera or mic in use | `ConsentStore` registry (below) | logged, dropped | pending, no push |
+| `busy`: fullscreen / presentation / Focus mode | `SHQueryUserNotificationState` | logged, dropped | pending, no push |
 
-| Condition | Detection (Windows) | Action |
-|---|---|---|
-| User idle ≥ 20 s (eye) / ≥ 2 min (movement) | `GetLastInputInfo` | Log `away`, no overlay |
-| Session locked / screensaver | `WTSRegisterSessionNotification` / lock state | Log `locked`, no overlay |
-| PC asleep at break time | wake detection / clock jump | Log `asleep` |
-| Camera or mic in use (meeting) | `CapabilityAccessManager\ConsentStore` registry (see below) | Log `suppressed_meeting` |
-| Fullscreen app / presentation / Focus mode | `SHQueryUserNotificationState` | Log `suppressed_busy` |
-
-`away` and `locked` are kept separate from `done` so stats show breaks actually taken vs. merely away. These are also the triggers for the future phone buzzer (see below).
-
-Deferred movement breaks (decide later): optionally re-offer a suppressed movement break once the meeting ends, if that happens within e.g. 15 min.
+- **Grace window:** a pending movement break is shown as soon as the block clears, if that happens within `move.grace_mins` (default 15).
+- **Delays are recorded:** a break that was held and then done is logged as `outcome: "done", delayed_by: "meeting"`.
+- **No phone push when:**
+  - the break was **explicitly skipped**;
+  - the reason is `meeting` or `busy` (you're at the PC).
 
 #### Camera/mic detection
 
-This is easy. Windows records per-app capability use under
+Windows records per-app capability use under
 
 ```
 HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam
 HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone
 ```
 
-- There is one subkey per app; desktop apps sit under a `NonPackaged` subkey.
+- There is one subkey per app; desktop apps sit under `NonPackaged`.
 - A device is **in use** when some app has `LastUsedTimeStop == 0` (with a non-zero `LastUsedTimeStart`).
-- Reading these keys at break time is enough; no polling or permissions needed.
+- Reading these keys needs no special permissions.
 - Caveats:
-  - The key is undocumented, but it has been stable since Win10 1903 and is what the privacy tray icon uses.
-  - Some apps keep the mic open while idle, so we may need an app ignore list.
+  - The key is undocumented, but it has been stable since Win10 1903 and backs the privacy tray icon.
+  - Some apps keep the mic open while idle, so there's a config ignore list.
+
+### The break overlay
+
+- A borderless, always-on-top, semi-transparent dim window on **every monitor**.
+  - The **primary panel** (message, countdown, buttons) appears only on the monitor with the mouse cursor.
+  - The other monitors are just dimmed.
+  - `overlay.monitors = "all" | "active"`.
+- **Eye break:** "Look 20 ft away" with a 20 s countdown.
+  - **Done is disabled until the countdown ends**, so `done` means the eyes actually rested.
+- **Movement break:** "Movement time", with one row per exercise, each with a rep stepper prefilled with the target (e.g. `Squats [−] 15 [+]`).
+  - If you did the target, Done is still one click.
+  - Adjust a stepper only when the count differs; 0 means that exercise was skipped.
+  - `Tab` moves between rows; digits edit the focused stepper.
+- **Closing:** the overlay never auto-dismisses.
+  - **Done:** button, or `Enter`.
+  - **Skip:** button, or **`Esc` twice within 1 s**. The first `Esc` shows "Press Esc again to skip".
+- **Input grace:** all keyboard input is ignored for the first `overlay.input_grace_ms` (default 1000) after it appears.
+  - This stops in-flight typing (Enter, Space, digits) from acknowledging the break or editing reps.
+  - The Done button follows the same rule.
+- **Focus:** the overlay takes keyboard focus when it appears.
+  - Alt-Tab, the Windows key, etc. are not blocked.
+  - If you switch away and leave it, it stays until resolved or replaced.
+
+> **Technical risk:** Windows' foreground lock can refuse focus to a background app and flash the taskbar instead. This is proven out first in M1 (see Milestones). Known workarounds: `AllowSetForegroundWindow` from the tray process, `AttachThreadInput`, or a simulated Alt keypress before `SetForegroundWindow`.
 
 ### Heads-up toast (optional)
 
 - When enabled, a Windows toast appears N seconds before each overlay ("Eye break in 10 s").
-- Disabled by default, since it may be noisy. Turned on with `[heads_up] enabled = true`.
+- Disabled by default, since it may be noisy.
 
-### Done for the day
+## Phone via ntfy
 
-- Tray action **"Done for the day"**: stops all breaks until the start of the next work day.
-- Logged as a `day_end` event with its timestamp, so stats can show what time work stopped each day.
-- If the day is never ended manually, an automatic `day_end` is logged at the configured `workday.end`, marked `auto`.
-- **"Resume"** in the tray undoes it (logs `day_resume`). The latest `day_end` of the day counts.
+[ntfy](https://ntfy.sh) is a free, open-source pub/sub notification service.
 
-### Tray
+- **How it works:** the desktop app publishes with a plain HTTP POST, and the ntfy iOS/Android app shows it as a push notification.
+- **Cost:** none. The public `ntfy.sh` server needs no account; paid tiers (reserved topics, higher limits) and self-hosting are optional.
+- **Your setup (one-time, ~2 min):**
+  1. Install the ntfy app on the phone.
+  2. Subscribe to a long random topic name. The app generates one; the name acts as the password, so don't use a guessable one.
+  3. Paste that topic into `config.toml`.
+- **Two topics:**
+  - `alerts`: desktop → phone. Away buzzer and evening reminders.
+  - `control`: phone → desktop. The desktop keeps a streaming subscription (`GET /<topic>/json`).
+- **Action buttons:** notifications carry ntfy `http` action buttons that publish to the control topic: **Done**, **Skip**, and in the evening **Going to sleep**.
+  - The desktop receives these and resolves the pending break (logged `via: "phone"`; reps = target) or enters the Sleep phase.
+  - *Verify early in M3 that the iOS ntfy app supports `http` actions.* Fallback: a `view` action opening a tiny local-network page, or notifications without buttons plus the tray / `quiet_after` for sleep.
+- **Security:** anyone who learns the topic names could send fake Done/Sleep messages. That's acceptable for a personal tool. A reserved, password-protected topic (ntfy Pro or self-hosted) is the upgrade path.
 
-- Tray icon showing state (active / paused / outside work hours).
+## Tray
+
+- Icon shows the state: work / evening / sleep / paused / pending break.
 - Menu:
   - Next break at HH:MM
   - Pause for 30 min / 1 h
   - Done for the day / Resume
+  - Going to sleep
   - Take a break now
   - Open config / settings
   - Today's stats
   - Quit
 - Starts on login (on by default).
 
-### Event log & stats
+## Event log & stats
 
-- Events are appended to `%APPDATA%\microbreaks\events.jsonl`.
-- Break events:
-  `{ "ts", "type": "break", "kind": "eye"|"move", "outcome", "shown_ms", "exercises"? }`
-- `exercises` appears only on `move` breaks with outcome `done`. It records the target and the actual count per exercise, so partial sets show up in stats:
-  `"exercises": [{ "name": "squats", "target": 15, "reps": 15 }, { "name": "pushups", "target": 10, "reps": 6 }]`
-- Break outcomes:
+Events are appended to `%APPDATA%\microbreaks\events.jsonl`. That's about 30 lines a day, so no database is needed.
 
-  | outcome | meaning |
-  |---|---|
-  | `done` | user acknowledged the break |
-  | `skipped` | user dismissed it (double Esc / Skip) |
-  | `away` | user was idle when it came due (AFK) |
-  | `locked` | session was locked |
-  | `asleep` | PC was asleep; detected on wake |
-  | `replaced` | still on screen when the next break came due |
-  | `suppressed_meeting` | camera/mic in use |
-  | `suppressed_busy` | fullscreen / presentation / Focus mode |
+**Break events:**
 
-- Day events:
-  - `{ "ts", "type": "day_end", "auto": bool }`
-  - `{ "ts", "type": "day_resume" }`
-- Stats view (later):
-  - Per day/week: done vs skipped vs away.
-  - Reps per exercise per day/week, and completion rate (reps vs target).
-  - Shutdown time per day.
+```json
+{ "ts": "...", "type": "break", "kind": "eye"|"move", "phase": "work"|"evening",
+  "outcome": "...", "delayed_by": "away"|"locked"|"meeting"|"busy"|null,
+  "via": "desktop"|"phone", "shown_ms": 0,
+  "exercises": [{ "name": "squats", "target": 15, "reps": 15 }] }
+```
+
+- `exercises` appears on `move` breaks with outcome `done`.
+
+| outcome | meaning |
+|---|---|
+| `done` | acknowledged (desktop or phone) |
+| `skipped` | explicitly skipped |
+| `away` | idle when due; never resolved |
+| `locked` | session locked; never resolved |
+| `asleep` | PC was asleep |
+| `meeting` | camera/mic in use; never resolved |
+| `busy` | fullscreen/presentation; never resolved |
+| `replaced` | still pending or showing when the next break came due |
+
+**Day events:**
+
+- `{ "ts", "type": "day_end", "auto": bool }`, where `ts` is the real shutdown time.
+- `{ "ts", "type": "day_resume" }`
+- `{ "ts", "type": "sleep", "source": "phone"|"tray"|"auto" }`
+
+**Stats view (later):**
+
+- Per day/week: done vs skipped vs away.
+- Reps per exercise, and completion rate (reps vs target).
+- Shutdown time and bedtime per day.
 
 ## Configuration
 
-`%APPDATA%\microbreaks\config.toml` is created with defaults on first run and reloaded when the file changes. A settings window comes later and edits the same file.
+`%APPDATA%\microbreaks\config.toml` is created with defaults on first run and reloaded when the file changes. The later settings window edits the same file via `toml_edit`, so comments are preserved.
 
 ```toml
 [workday]
-days  = ["mon", "tue", "wed", "thu", "fri"]
-start = "08:00"
-end   = "17:00"
+days               = ["mon", "tue", "wed", "thu", "fri"]
+start              = "08:00"
+end                = "17:00"   # breaks continue past this until you go idle
+overtime_idle_mins = 30
 
 [eye]
 enabled        = true
-minutes        = [20, 40]     # wall-clock minutes; :00 is covered by the movement break
+minutes        = [20, 40]      # :00 is covered by the movement break
 duration_secs  = 20
 idle_skip_secs = 20
 
 [move]
 enabled        = true
 idle_skip_secs = 120
-mode           = "all"        # "all": every exercise each break | "rotate": one exercise per break, cycling
+grace_mins     = 15
+mode           = "all"         # "all" | "rotate" (one exercise per break, cycling)
 
 [[move.exercises]]
 name = "squats"
@@ -165,37 +244,56 @@ reps = 15
 # name = "pushups"
 # reps = 10
 
+[evening]
+enabled     = false
+start       = "17:00"          # used on non-work days; on work days evening starts at day_end
+quiet_after = "22:00"
+eye         = false            # eye breaks in the evening when active at the PC
+
 [heads_up]
 enabled = false
 secs    = 10
 
 [overlay]
-monitors = "all"              # "all" | "active"
-opacity  = 0.85
+monitors       = "all"         # "all" | "active"
+opacity        = 0.85
+input_grace_ms = 1000
 
 [suppress]
-camera_mic        = true
-fullscreen        = true
-ignore_mic_apps   = []        # exe names to ignore for mic detection
+camera_mic      = true
+fullscreen      = true
+ignore_mic_apps = []           # exe names to ignore for mic detection
+
+[ntfy]
+enabled       = false
+server        = "https://ntfy.sh"
+alerts_topic  = ""             # long random string
+control_topic = ""             # long random string
 ```
 
 ## Architecture
 
-**Stack:** Tauri 2. The Rust backend holds all logic; the overlay and settings UI are a thin TypeScript layer (Vite, plain TS or Svelte).
+**Stack:** Tauri 2. The Rust backend holds all logic; the overlay, settings and stats UI are a thin TypeScript layer (Vite, plain TS or Svelte).
 
 ```
 microbreaks/
-  crates/core/        # pure Rust, no OS deps: config, schedule, break state machine, event model
-  src-tauri/          # Tauri app: tray, overlay windows, Win32 probes, autostart, log writer
+  crates/core/        # pure Rust, no OS deps: config, schedule, phases, break state machine, event model
+  src-tauri/          # Tauri app: tray, overlay windows, Win32 probes, ntfy client, autostart, log writer
   ui/                 # overlay + settings + stats pages (web)
 ```
 
-- **`core` stays platform-free and fully unit-tested.**
-  - `next_break(now, config) -> (time, kind)`
-  - The state machine: `Idle → Due → Showing → Resolved(outcome)`.
-  - A future iOS app could reuse it (via uniffi), or a PWA (via wasm).
-- **Platform probes** sit behind a trait (`Presence`: `idle_secs()`, `is_locked()`, `in_meeting()`, `is_busy()`), so the scheduler is testable with fakes.
-- **Overlay windows:** one Tauri webview window per monitor, created at break time and destroyed afterwards. Not kept alive, to save memory.
+- **Scheduler is a tick, not timers.**
+  - Every ~2 s the app samples presence and calls `core::step(state, now, presence, inbox) -> (state, effects)`.
+  - Effects are things like show overlay, push to phone, or write event.
+  - This handles PC sleep, DST, clock changes and config reloads uniformly.
+  - A gap between ticks larger than ~1 min means the PC was asleep, and the breaks due in that gap are logged `asleep`.
+- **`core` stays platform-free and fully unit-tested**, including a simulated full day.
+  - A future native phone app could reuse it via uniffi, or a PWA via wasm.
+- **Platform traits keep the scheduler testable with fakes:**
+  - `Presence`: `idle_secs()`, `is_locked()`, `in_meeting()`, `is_busy()`.
+  - `Notifier`: the ntfy publish/subscribe.
+- **Overlay windows:** one webview window per monitor, created at break time and destroyed afterwards.
+  - If creation is noticeably slow, pre-create them hidden.
 
 **Why Tauri over alternatives:**
 - Small binary.
@@ -209,58 +307,29 @@ microbreaks/
 
 ## Milestones
 
-1. **M0 — Skeleton:** Tauri 2 project, tray icon with Quit, autostart, config file load with defaults.
-2. **M1 — Core loop (MVP):** *This is the version to start using daily.*
-   - Wall-clock scheduler and work hours.
-   - Eye + movement overlays on all monitors, with rep steppers.
-   - Done / double-Esc skip.
+1. **M0 — Skeleton:** Tauri 2 project, tray icon with Quit, autostart, config load with defaults.
+2. **M1 — Core loop (MVP).** *This is the version to start using daily.*
+   - **First task:** a focus-stealing spike. Show a topmost window from the tray process while another app has focus, and confirm it receives `Esc`.
+   - Tick scheduler, work hours, overtime-aware `day_end` (idle detection is needed here).
+   - Eye + movement overlays on all monitors, rep steppers, input grace, Done / double-Esc skip.
    - Done for the day / Resume.
    - Event log.
-3. **M2 — Smart suppression:** idle detection, lock detection, camera/mic, fullscreen/busy.
-4. **M3 — Polish:**
-   - Pause menu and "take a break now".
+3. **M2 — Smart suppression:** lock, asleep, camera/mic and fullscreen detection, plus the pending/grace mechanism.
+4. **M3 — Phone via ntfy:**
+   - Away buzzer with Done/Skip actions.
+   - Evening phase and Going to sleep.
+   - First, verify iOS `http` actions.
+5. **M4 — Polish:**
+   - Pause and "take a break now".
    - Today's stats.
-   - Optional heads-up toast.
+   - Heads-up toast.
    - Settings window.
-5. **M4 — Distribution:** code signing, MSIX packaging, Microsoft Store submission (if it's worth it).
-6. **Future — Phone:** see below.
-
-## Future: phone companion (undecided)
-
-The phone covers the two situations the desktop can't:
-
-- **Off-hours reminder:** standalone schedule on the phone, notifications only.
-  - iOS does not allow interrupting overlays; time-sensitive notifications are the ceiling.
-  - Needs a native iOS app (Tauri 2 mobile or Swift + shared `core`), because iOS PWAs can't schedule local notifications without a push server.
-- **AFK buzzer:** when a work-hours break resolves as `away` or `locked`, the desktop pushes the reminder to the phone instead.
-  - Explicit skips never buzz the phone.
-  - Needs a way for the desktop to reach the phone, e.g. a tiny push relay or a service like ntfy/Pushover.
-  - A Pushover/ntfy call from the desktop is the cheapest prototype and needs no phone app at all.
-
-### Day phases & sleep
-
-With the phone in the picture, the day has three phases. Each transition can happen on a schedule or by hand.
-
-| Phase | Who reminds | Ends when |
-|---|---|---|
-| **Work** | Desktop (+ AFK buzzer) | `day_end`: "Done for the day" or `workday.end` |
-| **Evening** | Phone only | `sleep`: "Going to sleep" or `evening.quiet_after` |
-| **Sleep** | Nobody | Next `workday.start` (or `evening.start` on non-work days) |
-
-- **Hard stop:** `quiet_after` (e.g. 22:00) is a backstop, so reminders never run all night even if you forget.
-- **Manual "Going to sleep":** a button or notification action on the phone ends the evening early. It logs a `sleep` event, giving bedtime stats next to shutdown-time stats.
-- **iOS Sleep Focus:** iOS already silences notifications during Sleep Focus, which protects the night for free. Reading Focus state (`INFocusStatusCenter`) only gives "a focus is on", not which one, so it's not worth using as a trigger.
-- Evening reminders are probably gentler than work ones, e.g. movement every 1–2 h with no eye breaks. That's to be decided with the phone phase.
-- Proposed config:
-
-```toml
-[evening]
-enabled       = false
-start         = "17:00"       # on non-work days, reminders start here
-quiet_after   = "22:00"
-```
+6. **M5 — Distribution:** code signing, MSIX packaging (autostart moves to a manifest `StartupTask`), Microsoft Store (if worth it).
+7. **Future — native phone app:** reminders when the PC is off (weekends, evenings away from home), using the shared `core`.
+   - iOS caps this at time-sensitive notifications.
+   - iOS PWAs can't schedule local notifications without a push server.
 
 ## Open questions
 
-- Should a movement break suppressed by a meeting be re-offered after it ends?
-- Evening schedule: which breaks, and how often?
+- Evening movement frequency: hourly, or every 2 h?
+- Weekends: no reminders, or evening-style reminders (needs the PC on, or the future phone app)?
