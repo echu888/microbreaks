@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod event;
+pub mod stats;
 pub mod step;
 
 pub use config::Config;
