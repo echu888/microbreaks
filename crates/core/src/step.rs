@@ -30,6 +30,9 @@ pub enum Input {
     PhoneSkip { id: u64 },
     DoneForDay,
     Resume,
+    /// Pause all breaks for `mins` minutes (replaces a pause already running).
+    Pause { mins: u32 },
+    EndPause,
     /// "Going to sleep" from the tray. Ignored during Work and while already asleep.
     GoingToSleep,
     /// "Going to sleep" tapped on the phone. Same gate.
@@ -80,6 +83,8 @@ pub struct State {
     last_tick: Option<NaiveDateTime>,
     /// The date whose work day has ended (manually or automatically).
     ended_on: Option<NaiveDate>,
+    /// Breaks are dropped (logged `paused`) until this time.
+    paused_until: Option<NaiveDateTime>,
     /// The `day_end` timestamp for `ended_on` (the real shutdown time).
     ended_ts: Option<NaiveDateTime>,
     /// The user's Sleep phase lasts until this wake time. Not the PC sleeping.
@@ -99,6 +104,11 @@ impl State {
     #[cfg(test)]
     pub(crate) fn active_id(&self) -> Option<u64> {
         self.active.as_ref().map(|a| a.spec.id)
+    }
+
+    /// Whether a pause is running at `now`.
+    pub fn is_paused(&self, now: NaiveDateTime) -> bool {
+        self.paused_until.is_some_and(|until| now < until)
     }
 
     /// Whether the work day for `today` has ended, manually or automatically.
@@ -152,6 +162,20 @@ pub fn step(
                     fx.push(Effect::Log(Event::DayResume { ts: now }));
                 }
             }
+            Input::Pause { mins } if *mins > 0 => {
+                let until = now + Duration::minutes(i64::from(*mins));
+                state.paused_until = Some(until);
+                // Like ending the day: a showing break counts as dismissed.
+                finish_break(state, now, Outcome::Skipped, None, Via::Desktop, &mut fx);
+                fx.push(Effect::Log(Event::Pause { ts: now, until }));
+            }
+            Input::Pause { .. } => {}
+            Input::EndPause => {
+                if state.is_paused(now) {
+                    state.paused_until = None;
+                    fx.push(Effect::Log(Event::PauseEnd { ts: now }));
+                }
+            }
             Input::GoingToSleep => try_sleep(state, cfg, now, SleepSource::Tray, &mut fx),
             Input::PhoneSleep => try_sleep(state, cfg, now, SleepSource::Phone, &mut fx),
             Input::TakeBreak(kind) => {
@@ -203,6 +227,11 @@ pub fn step(
     // A gap was handled above. Otherwise only the latest slot fires, so a skipped tick yields at most one break.
     if !slept {
         if let Some((_, kind, phase)) = due_slots(state, cfg, prev, now).pop() {
+            // Paused: nothing is shown, held or pushed. Logged so the stats show why.
+            if state.is_paused(now) {
+                fx.push(Effect::Log(break_event(now, phase, kind, Outcome::Paused, 0, None, Vec::new())));
+                return fx;
+            }
             match block_reason(cfg, presence, kind) {
                 None => start_break(state, cfg, now, kind, None, phase, &mut fx),
                 Some(reason) if kind == BreakKind::Move => {
@@ -220,7 +249,9 @@ pub fn step(
 
 /// The next scheduled break strictly after `now`, if any within the next week.
 pub fn next_break(state: &State, cfg: &Config, now: NaiveDateTime) -> Option<(BreakKind, NaiveDateTime)> {
-    let mut t = floor_minute(now) + Duration::minutes(1);
+    // A running pause drops everything until it ends, so the next real break comes after it.
+    let from = state.paused_until.filter(|u| *u > now).unwrap_or(now);
+    let mut t = floor_minute(from) + Duration::minutes(1);
     for _ in 0..8 * 24 * 60 {
         if let Some((kind, _)) = slot_kind(cfg, state, t) {
             return Some((kind, t));
@@ -233,16 +264,18 @@ pub fn next_break(state: &State, cfg: &Config, now: NaiveDateTime) -> Option<(Br
 /// e.g. "Work · next: eye break 10:20" (shown in the tray).
 pub fn status_line(state: &State, cfg: &Config, now: NaiveDateTime) -> String {
     let today = now.date();
-    let phase = if is_sleeping(state, now) {
-        "Sleep"
+    let phase = if let Some(until) = state.paused_until.filter(|u| *u > now) {
+        format!("Paused until {}", until.format("%H:%M"))
+    } else if is_sleeping(state, now) {
+        "Sleep".to_string()
     } else if in_offhours(cfg, state, now) {
-        "Off-hours"
+        "Off-hours".to_string()
     } else if state.ended_on == Some(today) {
-        "Done for the day"
+        "Done for the day".to_string()
     } else if is_workday(cfg, today) {
-        "Work"
+        "Work".to_string()
     } else {
-        "Off"
+        "Off".to_string()
     };
     match next_break(state, cfg, now) {
         Some((kind, t)) => {
@@ -253,7 +286,7 @@ pub fn status_line(state: &State, cfg: &Config, now: NaiveDateTime) -> String {
             let when = if t.date() == today { t.format("%H:%M") } else { t.format("%a %H:%M") };
             format!("{phase} · next: {what} {when}")
         }
-        None => phase.to_string(),
+        None => phase,
     }
 }
 

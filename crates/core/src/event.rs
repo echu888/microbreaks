@@ -18,6 +18,8 @@ pub enum Outcome {
     Asleep,
     Meeting,
     Busy,
+    /// Dropped because the user had paused.
+    Paused,
     Replaced,
 }
 
@@ -95,6 +97,15 @@ pub enum Event {
         auto: bool,
     },
     DayResume {
+        ts: NaiveDateTime,
+    },
+    /// A pause starts; it resumes by itself at `until`.
+    Pause {
+        ts: NaiveDateTime,
+        until: NaiveDateTime,
+    },
+    /// A pause cut short by the user (a natural expiry logs nothing).
+    PauseEnd {
         ts: NaiveDateTime,
     },
     /// The user's Sleep phase begins (not the PC sleeping, which logs `asleep` breaks).

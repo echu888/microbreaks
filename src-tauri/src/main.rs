@@ -3,11 +3,13 @@
 mod engine;
 mod ntfy;
 mod overlay;
+mod stats_window;
 mod win32;
 
 use std::sync::Mutex;
 use std::time::Duration;
 
+use microbreaks_core::stats::{DayStats, WeekStats};
 use microbreaks_core::{BlockReason, BreakKind, BreakSpec, Input};
 use serde::Serialize;
 use tauri::menu::{MenuBuilder, MenuItem};
@@ -39,6 +41,16 @@ fn current_break(window: WebviewWindow, shared: State<Shared>) -> Option<BreakVi
 }
 
 #[tauri::command]
+fn day_stats(shared: State<Shared>) -> DayStats {
+    shared.0.lock().unwrap().day_stats(chrono::Local::now().date_naive())
+}
+
+#[tauri::command]
+fn week_stats(shared: State<Shared>) -> WeekStats {
+    shared.0.lock().unwrap().week_stats(chrono::Local::now().date_naive())
+}
+
+#[tauri::command]
 async fn break_done(app: AppHandle, id: u64, reps: Vec<u32>) {
     engine::push(&app, Input::BreakDone { id, reps });
     engine::tick(&app);
@@ -54,7 +66,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![current_break, break_done, break_skip])
+        .invoke_handler(tauri::generate_handler![current_break, break_done, break_skip, day_stats, week_stats])
         .setup(|app| {
             let (mut engine, first_run) = Engine::load();
             let status = engine.status(chrono::Local::now().naive_local());
@@ -68,14 +80,29 @@ fn main() {
             let header = MenuItem::with_id(app, "status", &status, false, None::<&str>)?;
             let day_toggle = MenuItem::with_id(app, "day_toggle", "Done for the day", true, None::<&str>)?;
             let sleep = MenuItem::with_id(app, "sleep", "Going to sleep", true, None::<&str>)?;
+            let take_break = MenuItem::with_id(app, "take_break", "Take a break now", true, None::<&str>)?;
+            let pause_30 = MenuItem::with_id(app, "pause_30", "Pause for 30 min", true, None::<&str>)?;
+            let pause_60 = MenuItem::with_id(app, "pause_60", "Pause for 1 h", true, None::<&str>)?;
+            let end_pause = MenuItem::with_id(app, "end_pause", "End pause", false, None::<&str>)?;
+            let stats = MenuItem::with_id(app, "stats", "Stats", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let mut menu = MenuBuilder::new(app).item(&header).separator().item(&day_toggle).item(&sleep);
+            let mut menu = MenuBuilder::new(app)
+                .item(&header)
+                .separator()
+                .item(&take_break)
+                .item(&pause_30)
+                .item(&pause_60)
+                .item(&end_pause)
+                .separator()
+                .item(&day_toggle)
+                .item(&sleep)
+                .separator()
+                .item(&stats);
             // Debug builds only: trigger breaks on demand (also the focus-stealing spike).
             let test_eye = MenuItem::with_id(app, "test_eye", "Test eye break", true, None::<&str>)?;
-            let test_move = MenuItem::with_id(app, "test_move", "Test movement break", true, None::<&str>)?;
             let test_phone = MenuItem::with_id(app, "test_phone", "Test phone push (away)", true, None::<&str>)?;
             if cfg!(debug_assertions) {
-                menu = menu.separator().item(&test_eye).item(&test_move).item(&test_phone);
+                menu = menu.separator().item(&test_eye).item(&test_phone);
             }
             let menu = menu.separator().item(&quit).build()?;
 
@@ -88,8 +115,12 @@ fn main() {
                         "day_toggle" => engine::toggle_day(app),
                         "sleep" => engine::push(app, Input::GoingToSleep),
                         "test_eye" => engine::push(app, Input::TakeBreak(BreakKind::Eye)),
-                        "test_move" => engine::push(app, Input::TakeBreak(BreakKind::Move)),
+                        "take_break" => engine::push(app, Input::TakeBreak(BreakKind::Move)),
+                        "pause_30" => engine::push(app, Input::Pause { mins: 30 }),
+                        "pause_60" => engine::push(app, Input::Pause { mins: 60 }),
+                        "end_pause" => engine::push(app, Input::EndPause),
                         "test_phone" => engine::push(app, Input::TakeHeldBreak(BlockReason::Away)),
+                        "stats" => return stats_window::open(app),
                         "quit" => return app.exit(0),
                         _ => return,
                     }
@@ -103,7 +134,7 @@ fn main() {
                 eprintln!("microbreaks: [ntfy] is enabled but needs two different topics (1-64 letters, digits, _ or -)");
             }
 
-            engine.tray_ui = Some(TrayUi { tray, header, day_toggle });
+            engine.tray_ui = Some(TrayUi { tray, header, day_toggle, end_pause });
             app.manage(Shared(Mutex::new(engine)));
 
             let handle = app.handle().clone();

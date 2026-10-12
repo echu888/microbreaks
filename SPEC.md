@@ -39,7 +39,11 @@ Primary target is **Windows**.
 - **Off-hours is opt-in** (`offhours.enabled`, off by default). With it off, nothing runs after the work day or on weekends, and no `sleep` events are written automatically.
 - **Exact schedule.** Off-hours breaks fire at `:00` only, after the phase starts and before `quiet_after` (the start itself does not fire, like 08:00 on a work day, so a Saturday's first break is 10:00 with the default `weekend_start`). Eye breaks fire at the eye minutes only if `offhours.eye` is on. On a work day the phase starts at `day_end`, even a manual early "Done for the day".
 - **Two kinds of sleep.** The user's **Sleep phase** (this section, event type `sleep`) is unrelated to the PC sleeping, which only produces `asleep` break outcomes.
-- **Pause** is a temporary overlay on any phase (tray "Pause for 30 min / 1 h"). It resumes automatically.
+- **Pause** is a temporary overlay on any phase (tray "Pause for 30 min / 1 h"). It resumes automatically, or early via "End pause".
+  - Every break that comes due while paused is dropped and logged `paused`: nothing is shown, held as pending, or pushed to the phone. A new pause replaces a running one.
+  - Starting a pause dismisses a showing break (logged `skipped`) and leaves a pending one logged with its block reason, like ending the day.
+  - "Take a break now" still works while paused. Day end, sleep and the phone buttons are unaffected.
+  - The status line reads "Paused until 10:35 · next: ...", where the next break is the first one after the pause ends.
 
 ### Phase vs. presence
 
@@ -240,7 +244,7 @@ When enabled, a Windows toast explains why a break didn't happen, so "why didn't
   - Going to sleep
   - Take a break now
   - Open config / settings
-  - Today's stats
+  - Stats
   - Quit
 - Starts on login (on by default).
 
@@ -271,20 +275,33 @@ Events are appended to `%APPDATA%\microbreaks\events.jsonl`. That's about 30 lin
 | `asleep` | PC was asleep |
 | `meeting` | camera/mic in use; never resolved |
 | `busy` | fullscreen/presentation; never resolved |
+| `paused` | the user had paused |
 | `replaced` | still pending or showing when the next break came due |
 
 **Day events:**
 
 - `{ "ts", "type": "day_end", "auto": bool }`, where `ts` is the real shutdown time.
 - `{ "ts", "type": "day_resume" }`
+- `{ "ts", "type": "pause", "until" }`, and `{ "ts", "type": "pause_end" }` only when a pause is ended early (a natural expiry logs nothing).
 - `{ "ts", "type": "sleep", "source": "phone"|"tray"|"auto" }`
 - A break's `phase` is the phase it **started** in and does not change if it is flushed or expires later. Gap logs (`asleep`) use each slot's own phase. A break started outside the schedule (a manual "take a break" on a weekend morning, say) logs `offhours`: anything that isn't Work does.
 
-**Stats view (later):**
+**Stats** (tray item, a small window with "Today" and "Last 7 days" tabs; it refreshes whenever it regains focus). **Today:**
 
-- Per day/week: done vs skipped vs away.
-- Reps per exercise, and completion rate (reps vs target).
-- Shutdown time and bedtime per day.
+- Per break kind: `done` of `due`, plus `skipped`, `missed` and `paused`.
+  - `missed` is every outcome where the user never got the break: `away`, `locked`, `asleep`, `meeting`, `busy` and `replaced`.
+  - `due` is `done + skipped + missed`. `paused` is the user's own choice, so it is shown but left out of `due`.
+- Reps per exercise against targets, over the movement breaks that were `done` (so a skipped break's reps never count).
+- Shutdown time (the last `day_end` of the day, cleared by a later `day_resume`) and bedtime.
+- Only events stamped on the local date count, so a bedtime after midnight belongs to the next day. Blank or unreadable lines in the log are skipped.
+- The summary is computed in core (`stats::summarize_day`) from the event lines, so it is unit-tested.
+
+**Last 7 days** (today and the six days before, newest first):
+
+- One row per day: movement and eye `done/due`, rep completion, and the work-day end.
+- A day with no events at all shows "no data" instead of zeros, so a day the app wasn't running doesn't look like a failure. Weekends are shown like any other day.
+- Totals under the rows use the same counting rules as the day view: `paused` is outside `due`, and reps come only from done breaks.
+- The log is read once and summed in core (`stats::summarize_week`).
 
 ## Configuration
 
