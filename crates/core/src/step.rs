@@ -44,6 +44,8 @@ pub enum Effect {
     /// Replaces any overlay already showing.
     ShowOverlay(BreakSpec),
     CloseOverlay,
+    /// A toast explaining a held or missed break. Only emitted when `notify.enabled`.
+    Notify { title: String, body: String },
     Log(Event),
 }
 
@@ -150,7 +152,18 @@ pub fn step(
         if let Some((_, kind)) = due_slots(state, cfg, prev, now).pop() {
             match block_reason(cfg, presence, kind) {
                 None => start_break(state, cfg, now, kind, None, &mut fx),
-                Some(reason) if kind == BreakKind::Move => start_break(state, cfg, now, kind, Some(reason), &mut fx),
+                Some(reason) if kind == BreakKind::Move => {
+                    start_break(state, cfg, now, kind, Some(reason), &mut fx);
+                    // Locked and away mean nobody is looking at the screen to read it.
+                    if matches!(reason, BlockReason::Meeting | BlockReason::Busy) {
+                        let body = format!(
+                            "{}. Will show when you're free, up to {} min.",
+                            reason_phrase(reason),
+                            cfg.movement.grace_mins
+                        );
+                        notify(cfg, "Movement break held", body, &mut fx);
+                    }
+                }
                 Some(reason) => fx.push(Effect::Log(break_event(now, kind, reason.outcome(), 0, None, Vec::new()))),
             }
         }
@@ -259,11 +272,29 @@ fn resolve_pending(state: &mut State, cfg: &Config, now: NaiveDateTime, presence
     if now - active.started > Duration::minutes(cfg.movement.grace_mins as i64) {
         state.active = None;
         fx.push(Effect::Log(break_event(now, BreakKind::Move, reason.outcome(), 0, None, Vec::new())));
+        let body = format!("{} for the whole {} min grace window.", reason_phrase(reason), cfg.movement.grace_mins);
+        notify(cfg, "Movement break missed", body, fx);
     } else if block_reason(cfg, presence, BreakKind::Move).is_none() {
         active.pending = None;
         active.delayed_by = Some(reason);
         active.started = now;
         fx.push(Effect::ShowOverlay(active.spec.clone()));
+    }
+}
+
+fn reason_phrase(reason: BlockReason) -> &'static str {
+    match reason {
+        BlockReason::Away => "You were away",
+        BlockReason::Locked => "The PC was locked",
+        BlockReason::Asleep => "The PC was asleep",
+        BlockReason::Meeting => "Camera or mic in use",
+        BlockReason::Busy => "A fullscreen app or presentation was running",
+    }
+}
+
+fn notify(cfg: &Config, title: &str, body: String, fx: &mut Vec<Effect>) {
+    if cfg.notify.enabled {
+        fx.push(Effect::Notify { title: title.into(), body });
     }
 }
 

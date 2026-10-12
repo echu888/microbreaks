@@ -13,6 +13,7 @@ pub struct Config {
     pub movement: Movement,
     pub overlay: Overlay,
     pub suppress: Suppress,
+    pub notify: Notify,
 }
 
 impl Config {
@@ -120,6 +121,13 @@ impl Default for Overlay {
     fn default() -> Self {
         Self { monitors: Monitors::All, opacity: 0.85, input_grace_ms: 1000 }
     }
+}
+
+/// Toasts that explain why a movement break was held or missed.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(default)]
+pub struct Notify {
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

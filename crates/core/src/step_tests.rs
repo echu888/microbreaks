@@ -18,6 +18,7 @@ struct Sim {
     events: Vec<Event>,
     closed: usize,
     last_id: u64,
+    toasts: Vec<(String, String)>,
 }
 
 impl Sim {
@@ -39,6 +40,7 @@ impl Sim {
                     self.last_id = spec.id;
                 }
                 Effect::CloseOverlay => self.closed += 1,
+                Effect::Notify { title, body } => self.toasts.push((title, body)),
                 Effect::Log(ev) => self.events.push(ev),
             }
         }
@@ -354,6 +356,47 @@ fn a_new_due_break_replaces_a_pending_one_without_touching_the_overlay() {
     sim.run_with(at(12, 10, 1, 0), away); // 09:00 move pending; eye breaks dropped; 10:00 move replaces it
     assert_eq!(sim.closed, 0);
     assert_eq!(sim.outcomes().iter().filter(|o| **o == Outcome::Replaced).count(), 1);
+}
+
+#[test]
+fn toast_when_a_movement_break_is_held_for_a_meeting_or_busy() {
+    let mut sim = Sim::new();
+    sim.cfg.notify.enabled = true;
+    sim.tick(at(12, 8, 59, 30), 0, &[]);
+    sim.run_with(at(12, 9, 1, 0), presence(|p| p.meeting = true));
+    assert_eq!(sim.toasts.len(), 1);
+    assert_eq!(sim.toasts[0].0, "Movement break held");
+    assert!(sim.toasts[0].1.contains("Camera or mic in use") && sim.toasts[0].1.contains("15 min"));
+}
+
+#[test]
+fn no_toast_when_held_for_locked_or_away_or_when_disabled() {
+    let mut sim = Sim::new();
+    sim.cfg.notify.enabled = true;
+    sim.tick(at(12, 8, 59, 30), 0, &[]);
+    sim.run_with(at(12, 9, 1, 0), presence(|p| p.locked = true));
+    assert!(sim.toasts.is_empty());
+
+    let mut sim = Sim::new(); // notify defaults to off
+    sim.tick(at(12, 8, 59, 30), 0, &[]);
+    sim.run_with(at(12, 9, 1, 0), presence(|p| p.meeting = true));
+    sim.run_with(at(12, 9, 20, 0), presence(|p| p.meeting = true));
+    assert!(sim.toasts.is_empty());
+}
+
+#[test]
+fn toast_when_a_pending_break_expires_but_not_when_dropped_eye_breaks() {
+    let mut sim = Sim::new();
+    sim.cfg.notify.enabled = true;
+    let away = presence(|p| p.idle_secs = 600);
+    sim.tick(at(12, 8, 19, 30), 0, &[]);
+    sim.run_with(at(12, 8, 21, 0), away); // eye dropped: no toast
+    assert!(sim.toasts.is_empty());
+    sim.run_with(at(12, 8, 59, 0), away);
+    sim.run_with(at(12, 9, 16, 0), away); // the 09:00 move expires after 15 min
+    assert_eq!(sim.toasts.len(), 1);
+    assert_eq!(sim.toasts[0].0, "Movement break missed");
+    assert!(sim.toasts[0].1.contains("You were away"));
 }
 
 #[test]
