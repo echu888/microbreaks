@@ -286,11 +286,17 @@ Events are appended to `%APPDATA%\microbreaks\events.jsonl`. That's about 30 lin
 - `{ "ts", "type": "sleep", "source": "phone"|"tray"|"auto" }`
 - A break's `phase` is the phase it **started** in and does not change if it is flushed or expires later. Gap logs (`asleep`) use each slot's own phase. A break started outside the schedule (a manual "take a break" on a weekend morning, say) logs `offhours`: anything that isn't Work does.
 
-**Stats view (later):**
+**Today's stats** (tray item, a small window; it refreshes whenever it regains focus):
 
-- Per day/week: done vs skipped vs away.
-- Reps per exercise, and completion rate (reps vs target).
-- Shutdown time and bedtime per day.
+- Per break kind: `done` of `due`, plus `skipped`, `missed` and `paused`.
+  - `missed` is every outcome where the user never got the break: `away`, `locked`, `asleep`, `meeting`, `busy` and `replaced`.
+  - `due` is `done + skipped + missed`. `paused` is the user's own choice, so it is shown but left out of `due`.
+- Reps per exercise against targets, over the movement breaks that were `done` (so a skipped break's reps never count).
+- Shutdown time (the last `day_end` of the day, cleared by a later `day_resume`) and bedtime.
+- Only events stamped on the local date count, so a bedtime after midnight belongs to the next day. Blank or unreadable lines in the log are skipped.
+- The summary is computed in core (`stats::summarize_day`) from the event lines, so it is unit-tested.
+
+**Later:** a week view with per-day rows and completion rates.
 
 ## Configuration
 
