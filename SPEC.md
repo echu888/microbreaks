@@ -1,4 +1,6 @@
-# microbreaks — spec (draft v0.5)
+# microbreaks — spec (v0.5)
+
+> Living document: describes *what* we're building and *how*. Progress lives in [STATUS.md](STATUS.md). When implementation changes a decision, update this file in the same PR.
 
 A small desktop app that enforces two habits:
 
@@ -328,6 +330,8 @@ microbreaks/
   - Pure-Rust UI (egui/Slint): no web reuse.
 
 ## Milestones
+
+Current progress is tracked in [STATUS.md](STATUS.md).
 
 1. **M0 — Skeleton:** Tauri 2 project, tray icon with Quit, autostart, config load with defaults.
 2. **M1 — Core loop (MVP).** *This is the version to start using daily.*
