@@ -62,6 +62,8 @@ What the user sees is **phase + presence + next break**, e.g. "Work · next: eye
 - **Automatic (overtime-aware):** breaks continue normally past `workday.end` for as long as you're active.
   - The day ends at the first idle period of `overtime_idle_mins` or more (default 30), or when the PC locks or sleeps, after `workday.end`.
   - The logged timestamp is the **start** of that idle period, i.e. your real shutdown time.
+- **Lock or sleep:** a lock that starts after `workday.end` ends the day at the last input before the lock. A sleep that starts after `workday.end` ends it at the last tick before the sleep.
+- **Lock or sleep that spans `workday.end`** (started before, still going or ended after) does not end the day by itself, so a coffee run at 16:50 doesn't kill overtime breaks. After a long lock the idle rule still applies.
 - **Resume:** the tray "Resume" undoes it and logs `day_resume`.
 
 ### Going to sleep (`sleep`)
@@ -115,7 +117,10 @@ Due ──► Blocked? ──no──► Showing ──► done / skipped / repl
 | `meeting`: camera or mic in use | `ConsentStore` registry (below) | logged, dropped | pending, no push |
 | `busy`: fullscreen / presentation / Focus mode | `SHQueryUserNotificationState` | logged, dropped | pending, no push |
 
+- **Priority** when several apply: `asleep` > `locked` > `meeting` > `busy` > `away`. Someone on a call or watching fullscreen video is usually idle too, and must not count as away (M3 would buzz their phone while they sit at the PC).
+- **Asleep:** a gap of more than 60 s between ticks. Every slot in the gap is logged `asleep` (eye and movement), timestamped at the **slot time**, not the wake time. Nothing is shown on wake.
 - **Grace window:** a pending movement break is shown as soon as the block clears, if that happens within `move.grace_mins` (default 15).
+- **Pending breaks end three ways:** shown (block cleared in time), logged with the block reason (grace expired, or the day ended), or `replaced` by the next break that actually starts. An eye break that is dropped does not replace a pending movement break.
 - **Delays are recorded:** a break that was held and then done is logged as `outcome: "done", delayed_by: "meeting"`.
 - **No phone push when:**
   - the break was **explicitly skipped**;
@@ -132,10 +137,19 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentSt
 
 - There is one subkey per app; desktop apps sit under `NonPackaged`.
 - A device is **in use** when some app has `LastUsedTimeStop == 0` (with a non-zero `LastUsedTimeStart`).
+- `NonPackaged` subkey names are exe paths with `#` for `\` (`C:#Program Files#Zoom#Zoom.exe`). `ignore_mic_apps` matches the last segment, case-insensitively, for the microphone only.
 - Reading these keys needs no special permissions.
 - Caveats:
   - The key is undocumented, but it has been stable since Win10 1903 and backs the privacy tray icon.
   - Some apps keep the mic open while idle, so there's a config ignore list.
+
+#### Busy detection
+
+`SHQueryUserNotificationState` counts as busy for `QUNS_BUSY`, `QUNS_RUNNING_D3D_FULL_SCREEN` and `QUNS_PRESENTATION_MODE`. `QUNS_NOT_PRESENT` is ignored (the lock probe covers it). `QUNS_QUIET_TIME` and `QUNS_APP` are deliberately not used: as documented they don't clearly mean Focus assist or fullscreen, and a false "busy" silently loses breaks. **Focus mode is therefore not detected yet.** The probe reports not busy while the foreground window belongs to our own process, because the break overlay is itself fullscreen.
+
+#### Locked detection
+
+Polled each tick via `WTSQuerySessionInformationW(WTSSessionInfoEx)`, reading `SessionFlags` (0 = locked). No message window is needed.
 
 ### The break overlay
 
@@ -165,6 +179,15 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentSt
 
 - When enabled, a Windows toast appears N seconds before each overlay ("Eye break in 10 s").
 - Disabled by default, since it may be noisy.
+
+### Block notifications (optional)
+
+When enabled, a Windows toast explains why a break didn't happen, so "why didn't my squat break show?" has an answer without opening `events.jsonl`. It is also the easiest way to see what each probe is doing.
+
+- **Movement break goes pending:** "Movement break held (meeting), will show when you're free, up to 15 min".
+- **Pending break expires:** "Movement break missed: still locked".
+- **No toast for:** dropped eye breaks (too frequent), `asleep` and `locked` (you can't see it), or `away` (you aren't there).
+- Core emits `Effect::Notify { title, body }`; the app shows it. Disabled by default, like the heads-up toast.
 
 ## Phone via ntfy
 
@@ -204,7 +227,7 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentSt
 Events are appended to `%APPDATA%\microbreaks\events.jsonl`. That's about 30 lines a day, so no database is needed.
 
 - `ts` is local wall-clock time without an offset (`2026-10-12T08:20:00`), matching the wall-clock scheduler. Ambiguous only during the repeated DST hour.
-- M1 omits `delayed_by` and only logs the outcomes `done`, `skipped`, `away` (eye breaks only) and `replaced`; the rest arrive with M2.
+- `delayed_by` is `null` unless a held movement break was shown later and then resolved.
 
 **Break events:**
 
@@ -281,6 +304,9 @@ eye           = false          # eye breaks in Off-hours when active at the PC
 enabled = false
 secs    = 10
 
+[notify]
+enabled = false                # toast when a movement break is held or missed, with the reason
+
 [overlay]
 monitors       = "all"         # "all" | "active"
 opacity        = 0.85
@@ -314,10 +340,11 @@ microbreaks/
   - Effects are things like show overlay, push to phone, or write event.
   - This handles PC sleep, DST, clock changes and config reloads uniformly.
   - A gap between ticks larger than ~1 min means the PC was asleep, and the breaks due in that gap are logged `asleep`.
+- **Probe cost:** the camera/mic registry scan runs every tick (a few dozen key reads). If that shows up in profiling, probe only when a break is due or pending.
 - **`core` stays platform-free and fully unit-tested**, including a simulated full day.
   - A future native phone app could reuse it via uniffi, or a PWA via wasm.
 - **Platform traits keep the scheduler testable with fakes:**
-  - `Presence`: `idle_secs()`, `is_locked()`, `in_meeting()`, `is_busy()`.
+  - `Presence`: a plain snapshot struct (`idle_secs`, `locked`, `meeting`, `busy`) filled by the Windows probes each tick and passed to `step`. Core never calls the OS.
   - `Notifier`: the ntfy publish/subscribe.
 - **Overlay windows:** one webview window per monitor, created at break time and destroyed afterwards.
   - If creation is noticeably slow, pre-create them hidden.

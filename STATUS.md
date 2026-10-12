@@ -4,14 +4,14 @@ _Last updated: 2026-10-12_
 
 ## Current milestone
 
-**M0 + M1** are written and **build cleanly** (`cargo build -p microbreaks`, no warnings; 20 core tests pass). The debug exe launches, stays running and writes the first-run `config.toml`. The tray, overlay, focus-stealing and event log are **not yet verified by hand**.
+**M1** is hand-verified. **M2** is written on branch `m2-smart-suppression`: core logic has 35 passing tests, the app builds cleanly and stays running, but the **Windows probes are unverified by hand** (see Next up).
 
 ## Milestones
 
 - [x] Spec (v0.5)
 - [ ] M0 — Skeleton: Tauri 2 project, tray + Quit, autostart, config load. _Tray, status header and Quit verified. Autostart unverified: the config was created by a debug run, so the release build never saw `first_run` and didn't register the Run key._
 - [x] M1 — Core loop (MVP): focus spike first, then scheduler, overlays, day end, event log. _Verified by hand 2026-10-12: focus-stealing works (acts modal), overlay on both monitors, Done gated by countdown, event log written. Movement break / Esc Esc not exercised yet, assumed same path._
-- [ ] M2 — Smart suppression: lock / asleep / camera-mic / fullscreen, pending + grace
+- [ ] M2 — Smart suppression: lock / asleep / camera-mic / fullscreen, pending + grace. _Core + probes written; tick after the manual checks below._
 - [ ] M3 — Phone via ntfy: away buzzer, Off-hours, Going to sleep
 - [ ] M4 — Polish: pause, stats, heads-up toast, settings window
 - [ ] M5 — Distribution: signing, MSIX, Store
@@ -20,7 +20,14 @@ _Last updated: 2026-10-12_
 
 1. Verify autostart: delete `%APPDATA%\microbreaks\config.toml`, run the release build once, check `HKCU\...\Run` has a `microbreaks` entry. Then tick M0.
 2. Watch the first real movement break (on the hour) in the release build: reps steppers, Done, `exercises` in `events.jsonl`.
-3. Start M2 (smart suppression), core logic first in `crates/core`.
+3. Verify M2 probes by hand (debug build, then tick M2):
+   - **Lock:** Win+L during a movement slot, unlock within 15 min: break shows on return, event has `delayed_by: "locked"`.
+   - **Meeting:** open Camera (or join a call); an eye break logs `meeting`, a movement break waits. Check whether any app needs adding to `ignore_mic_apps`.
+   - **Busy:** play a fullscreen video/game at a break time; the break logs `busy` / waits. Confirm our own overlay does not make the probe report busy, and note which `QUNS_*` values fire. Focus assist and fullscreen Store apps are not detected (`QUNS_QUIET_TIME` / `QUNS_APP` left out on purpose); check whether that matters.
+   - **Asleep:** sleep the PC across a slot; events show `asleep` at the slot times.
+   - **Day end on lock/sleep:** after 17:00, lock the PC and check for an auto `day_end` at the last input time.
+4. Block-reason toasts (planned, see SPEC → Block notifications): `Effect::Notify` in core with tests, `tauri-plugin-notification` in `src-tauri`, `[notify]` config (off by default). New branch off M2. Turn it on while doing the M2 manual checks above.
+5. Start M3 (phone via ntfy). First verify iOS ntfy `http` actions.
 
 ## Known issues / risks
 
@@ -28,7 +35,9 @@ _Last updated: 2026-10-12_
 - Windows foreground lock may stop the overlay from taking focus (see SPEC → The break overlay). `win32::force_foreground` tries `AttachThreadInput`, then a synthetic Alt press.
 - Not yet verified whether the iOS ntfy app supports `http` action buttons (needed in M3).
 - Overlay, tray and Win32 probes can only be tested on Windows. Cloud/Linux sessions can only test `crates/core`.
-- M1 scope gaps (all M2+): no lock/sleep/meeting/busy detection, no pending/grace for movement breaks (they show even when away), a PC that sleeps through the end of the day never logs `day_end`, no config reload, no single-instance guard, one tray icon for all states.
+- Remaining gaps: no config reload, no single-instance guard, one tray icon for all states (no pending badge yet), no phone push for away/locked pending breaks (M3).
+- The camera/mic registry scan runs every 2 s tick. Fine for now; probe only when a break is due if it ever matters.
+- An expired pending movement break is logged with the reason that held it first, not the last one.
 - The config file is only read at startup. An invalid file falls back to defaults (message on stderr only).
 
 ## Log
@@ -37,3 +46,4 @@ _Last updated: 2026-10-12_
 - 2026-10-12: M0 + M1 code written (core scheduler with 20 passing tests, Tauri tray/overlay/event log, plain-JS overlay UI). Builds and launches on Windows; manual verification pending.
 - 2026-10-12: Eye `idle_skip_secs` default 20 → 120 (readers who don't touch input were losing breaks); spec, default config and tests updated, 21 core tests pass.
 - 2026-10-12: Hand-verified tray, focus-stealing overlay, eye-break gating and event log; M1 ticked, M0 waits on autostart.
+- 2026-10-12: M2 written: `Presence` snapshot, block priority, pending/grace for movement breaks, asleep via tick gap, `delayed_by`, lock/sleep day end, Win32 probes for lock, camera/mic and busy. 35 core tests pass, app builds. Probes await manual verification.
