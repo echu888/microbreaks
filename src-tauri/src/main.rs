@@ -67,8 +67,9 @@ fn main() {
 
             let header = MenuItem::with_id(app, "status", &status, false, None::<&str>)?;
             let day_toggle = MenuItem::with_id(app, "day_toggle", "Done for the day", true, None::<&str>)?;
+            let sleep = MenuItem::with_id(app, "sleep", "Going to sleep", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let mut menu = MenuBuilder::new(app).item(&header).separator().item(&day_toggle);
+            let mut menu = MenuBuilder::new(app).item(&header).separator().item(&day_toggle).item(&sleep);
             // Debug builds only: trigger breaks on demand (also the focus-stealing spike).
             let test_eye = MenuItem::with_id(app, "test_eye", "Test eye break", true, None::<&str>)?;
             let test_move = MenuItem::with_id(app, "test_move", "Test movement break", true, None::<&str>)?;
@@ -85,6 +86,7 @@ fn main() {
                 .on_menu_event(|app, event| {
                     match event.id().as_ref() {
                         "day_toggle" => engine::toggle_day(app),
+                        "sleep" => engine::push(app, Input::GoingToSleep),
                         "test_eye" => engine::push(app, Input::TakeBreak(BreakKind::Eye)),
                         "test_move" => engine::push(app, Input::TakeBreak(BreakKind::Move)),
                         "test_phone" => engine::push(app, Input::TakeHeldBreak(BlockReason::Away)),

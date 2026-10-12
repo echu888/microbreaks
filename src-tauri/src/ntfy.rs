@@ -7,7 +7,7 @@ use std::io::{BufRead, BufReader};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use microbreaks_core::config::Ntfy;
-use microbreaks_core::{control_body, parse_control};
+use microbreaks_core::{control_body, parse_control, Reply};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 use ureq::Agent;
@@ -41,19 +41,23 @@ fn root(cfg: &Ntfy) -> &str {
     cfg.server.trim_end_matches('/')
 }
 
-/// Sends a movement-break notification with Done and Skip buttons that POST to the control topic.
-/// Blocking; call from a worker thread.
-pub fn publish(cfg: &Ntfy, id: u64, title: &str, message: &str) {
+/// Sends a movement-break notification with Done and Skip buttons (plus "Going to sleep" in
+/// Off-hours) that POST to the control topic. Blocking; call from a worker thread.
+pub fn publish(cfg: &Ntfy, id: u64, title: &str, message: &str, sleep_button: bool) {
     let control_url = format!("{}/{}", root(cfg), cfg.control_topic);
-    let action = |label: &str, done: bool| {
+    let action = |label: &str, reply: Reply| {
         json!({
             "action": "http", "label": label, "url": control_url, "method": "POST",
-            "body": control_body(done, id), "clear": true,
+            "body": control_body(reply, id), "clear": true,
         })
     };
+    let mut actions = vec![action("Done", Reply::Done), action("Skip", Reply::Skip)];
+    if sleep_button {
+        actions.push(action("Going to sleep", Reply::Sleep));
+    }
     let body = json!({
         "topic": cfg.alerts_topic, "title": title, "message": message, "priority": 4,
-        "actions": [action("Done", true), action("Skip", false)],
+        "actions": actions,
     });
     let result = agent(Some(Duration::from_secs(30)))
         .post(format!("{}/", root(cfg)))

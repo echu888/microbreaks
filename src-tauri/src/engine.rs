@@ -153,10 +153,10 @@ pub fn tick(app: &AppHandle) {
         match effect {
             Effect::ShowOverlay(spec) => overlay::show(app, &cfg, spec.id),
             Effect::CloseOverlay => overlay::close(app),
-            Effect::Push { id, title, message } => {
+            Effect::Push { id, title, message, sleep_button } => {
                 // Off the tick thread: the request can take seconds.
                 let ntfy_cfg = cfg.ntfy.clone();
-                std::thread::spawn(move || ntfy::publish(&ntfy_cfg, id, &title, &message));
+                std::thread::spawn(move || ntfy::publish(&ntfy_cfg, id, &title, &message, sleep_button));
             }
             Effect::Toast { title, body } => {
                 if let Err(e) = app.notification().builder().title(title).body(body).show() {
