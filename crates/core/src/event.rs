@@ -14,7 +14,34 @@ pub enum Outcome {
     Done,
     Skipped,
     Away,
+    Locked,
+    Asleep,
+    Meeting,
+    Busy,
     Replaced,
+}
+
+/// Why a break was held back. Also the outcome of a break that was never resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BlockReason {
+    Away,
+    Locked,
+    Asleep,
+    Meeting,
+    Busy,
+}
+
+impl BlockReason {
+    pub fn outcome(self) -> Outcome {
+        match self {
+            BlockReason::Away => Outcome::Away,
+            BlockReason::Locked => Outcome::Locked,
+            BlockReason::Asleep => Outcome::Asleep,
+            BlockReason::Meeting => Outcome::Meeting,
+            BlockReason::Busy => Outcome::Busy,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -45,6 +72,7 @@ pub enum Event {
         kind: BreakKind,
         phase: Phase,
         outcome: Outcome,
+        delayed_by: Option<BlockReason>,
         via: Via,
         shown_ms: i64,
         #[serde(skip_serializing_if = "Vec::is_empty")]

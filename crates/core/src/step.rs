@@ -2,14 +2,23 @@ use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
 use serde::Serialize;
 
 use crate::config::{Config, Exercise, MoveMode};
-use crate::event::{BreakKind, Event, ExerciseResult, Outcome, Phase, Via};
+use crate::event::{BlockReason, BreakKind, Event, ExerciseResult, Outcome, Phase, Via};
 
 /// Longest gap between ticks that is scanned for due breaks.
 const MAX_SCAN: Duration = Duration::hours(24);
 
-#[derive(Debug, Clone, Copy)]
+/// A gap between ticks longer than this means the PC was asleep.
+const SLEEP_GAP: Duration = Duration::seconds(60);
+
+/// A snapshot of what the platform probes report at one tick.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Presence {
     pub idle_secs: u64,
+    pub locked: bool,
+    /// Camera or microphone in use.
+    pub meeting: bool,
+    /// Fullscreen app, presentation or Focus mode.
+    pub busy: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,7 +50,12 @@ pub enum Effect {
 #[derive(Debug)]
 struct Active {
     spec: BreakSpec,
+    /// When the overlay was shown; while pending, when the break came due.
     started: NaiveDateTime,
+    /// Set while a movement break is held back (no overlay yet).
+    pending: Option<BlockReason>,
+    /// Why a shown break was held first.
+    delayed_by: Option<BlockReason>,
 }
 
 #[derive(Debug, Default)]
@@ -95,29 +109,50 @@ pub fn step(
                     fx.push(Effect::Log(Event::DayResume { ts: now }));
                 }
             }
-            Input::TakeBreak(kind) => start_break(state, cfg, now, *kind, &mut fx),
+            Input::TakeBreak(kind) => start_break(state, cfg, now, *kind, None, &mut fx),
         }
     }
 
-    // Overtime-aware automatic day end: the first long idle period after `end`.
+    let prev = state.last_tick.unwrap_or(now);
+    let slept = state.last_tick.is_some() && now - prev > SLEEP_GAP;
+    state.last_tick = Some(now);
+
+    if slept {
+        // Closing the lid after `end` is a shutdown; sleeping before `end` and waking after it is not.
+        if is_workday(cfg, prev.date()) && state.ended_on != Some(prev.date()) && prev.time() >= cfg.workday.end {
+            state.ended_on = Some(prev.date());
+            fx.push(Effect::Log(Event::DayEnd { ts: prev, auto: true }));
+        }
+        // Logged at the slot time, not the wake time, so the stats show when the break was missed.
+        for (t, kind) in due_slots(state, cfg, prev, now) {
+            fx.push(Effect::Log(break_event(t, kind, Outcome::Asleep, 0, None, Vec::new())));
+        }
+    }
+
+    // Overtime-aware automatic day end: a lock, or the first long idle period, after `end`.
     // Logged at the start of the idle period, i.e. the real shutdown time.
     if state.ended_on != Some(today)
         && is_workday(cfg, today)
         && now.time() >= cfg.workday.end
-        && presence.idle_secs >= cfg.workday.overtime_idle_mins * 60
     {
         let idle_start = now - Duration::seconds(presence.idle_secs as i64);
-        end_day(state, now, idle_start, true, &mut fx);
+        // A lock only counts if it started after `end`; a long lock is caught by the idle rule.
+        let locked_after_end = presence.locked && idle_start.time() >= cfg.workday.end && idle_start.date() == today;
+        if locked_after_end || presence.idle_secs >= cfg.workday.overtime_idle_mins * 60 {
+            end_day(state, now, idle_start, true, &mut fx);
+        }
     }
 
-    let prev = state.last_tick.unwrap_or(now);
-    state.last_tick = Some(now);
-    // Only the latest slot in a gap fires, so a long gap yields at most one break.
-    if let Some(kind) = latest_due(state, cfg, prev, now) {
-        if kind == BreakKind::Eye && presence.idle_secs >= cfg.eye.idle_skip_secs {
-            fx.push(Effect::Log(break_event(now, kind, Outcome::Away, 0, Vec::new())));
-        } else {
-            start_break(state, cfg, now, kind, &mut fx);
+    resolve_pending(state, cfg, now, presence, &mut fx);
+
+    // A gap was handled above. Otherwise only the latest slot fires, so a skipped tick yields at most one break.
+    if !slept {
+        if let Some((_, kind)) = due_slots(state, cfg, prev, now).pop() {
+            match block_reason(cfg, presence, kind) {
+                None => start_break(state, cfg, now, kind, None, &mut fx),
+                Some(reason) if kind == BreakKind::Move => start_break(state, cfg, now, kind, Some(reason), &mut fx),
+                Some(reason) => fx.push(Effect::Log(break_event(now, kind, reason.outcome(), 0, None, Vec::new()))),
+            }
         }
     }
 
@@ -183,23 +218,71 @@ fn slot_kind(cfg: &Config, ended_on: Option<NaiveDate>, t: NaiveDateTime) -> Opt
     }
 }
 
-/// The latest slot in `(prev, now]`.
-fn latest_due(state: &State, cfg: &Config, prev: NaiveDateTime, now: NaiveDateTime) -> Option<BreakKind> {
+/// Every slot in `(prev, now]`, oldest first.
+fn due_slots(state: &State, cfg: &Config, prev: NaiveDateTime, now: NaiveDateTime) -> Vec<(NaiveDateTime, BreakKind)> {
     let from = if now - prev > MAX_SCAN { now - MAX_SCAN } else { prev };
     let mut t = floor_minute(from) + Duration::minutes(1);
-    let mut due = None;
+    let mut due = Vec::new();
     while t <= now {
-        due = slot_kind(cfg, state.ended_on, t).or(due);
+        if let Some(kind) = slot_kind(cfg, state.ended_on, t) {
+            due.push((t, kind));
+        }
         t += Duration::minutes(1);
     }
     due
 }
 
-fn start_break(state: &mut State, cfg: &Config, now: NaiveDateTime, kind: BreakKind, fx: &mut Vec<Effect>) {
-    // The new overlay replaces the old one, so only the log entry is needed.
+/// What holds a break back right now. Checked in priority order: someone on a call or
+/// watching fullscreen video is usually idle too, and must not be treated as away.
+fn block_reason(cfg: &Config, presence: Presence, kind: BreakKind) -> Option<BlockReason> {
+    let idle_skip = match kind {
+        BreakKind::Eye => cfg.eye.idle_skip_secs,
+        BreakKind::Move => cfg.movement.idle_skip_secs,
+    };
+    if presence.locked {
+        Some(BlockReason::Locked)
+    } else if cfg.suppress.camera_mic && presence.meeting {
+        Some(BlockReason::Meeting)
+    } else if cfg.suppress.fullscreen && presence.busy {
+        Some(BlockReason::Busy)
+    } else if presence.idle_secs >= idle_skip {
+        Some(BlockReason::Away)
+    } else {
+        None
+    }
+}
+
+/// Shows a held movement break once its block clears, or gives up when the grace window ends.
+fn resolve_pending(state: &mut State, cfg: &Config, now: NaiveDateTime, presence: Presence, fx: &mut Vec<Effect>) {
+    let Some(active) = state.active.as_mut() else { return };
+    let Some(reason) = active.pending else { return };
+    if now - active.started > Duration::minutes(cfg.movement.grace_mins as i64) {
+        state.active = None;
+        fx.push(Effect::Log(break_event(now, BreakKind::Move, reason.outcome(), 0, None, Vec::new())));
+    } else if block_reason(cfg, presence, BreakKind::Move).is_none() {
+        active.pending = None;
+        active.delayed_by = Some(reason);
+        active.started = now;
+        fx.push(Effect::ShowOverlay(active.spec.clone()));
+    }
+}
+
+/// Starts a break. With `hold` set it stays pending (no overlay) until the block clears.
+fn start_break(
+    state: &mut State,
+    cfg: &Config,
+    now: NaiveDateTime,
+    kind: BreakKind,
+    hold: Option<BlockReason>,
+    fx: &mut Vec<Effect>,
+) {
+    // A new overlay replaces the old one, but a held break shows nothing, so close it explicitly.
     if let Some(old) = state.active.take() {
-        let shown_ms = (now - old.started).num_milliseconds();
-        fx.push(Effect::Log(break_event(now, old.spec.kind, Outcome::Replaced, shown_ms, Vec::new())));
+        let shown_ms = if old.pending.is_some() { 0 } else { (now - old.started).num_milliseconds() };
+        fx.push(Effect::Log(break_event(now, old.spec.kind, Outcome::Replaced, shown_ms, None, Vec::new())));
+        if old.pending.is_none() && hold.is_some() {
+            fx.push(Effect::CloseOverlay);
+        }
     }
     let exercises = match (kind, cfg.movement.mode) {
         (BreakKind::Eye, _) => Vec::new(),
@@ -218,8 +301,10 @@ fn start_break(state: &mut State, cfg: &Config, now: NaiveDateTime, kind: BreakK
         duration_secs: if kind == BreakKind::Eye { cfg.eye.duration_secs } else { 0 },
         exercises,
     };
-    fx.push(Effect::ShowOverlay(spec.clone()));
-    state.active = Some(Active { spec, started: now });
+    if hold.is_none() {
+        fx.push(Effect::ShowOverlay(spec.clone()));
+    }
+    state.active = Some(Active { spec, started: now, pending: hold, delayed_by: None });
 }
 
 /// Logs the active break with `outcome` and closes its overlay.
@@ -231,6 +316,12 @@ fn finish_break(
     fx: &mut Vec<Effect>,
 ) {
     let Some(active) = state.active.take() else { return };
+    // A pending break was never shown: log why it never resolved, and there is no overlay to close.
+    // (M3: a phone Done on a pending break must log `done`, not the block reason.)
+    if let Some(reason) = active.pending {
+        fx.push(Effect::Log(break_event(now, active.spec.kind, reason.outcome(), 0, None, Vec::new())));
+        return;
+    }
     let results = match reps {
         Some(reps) if active.spec.kind == BreakKind::Move => active
             .spec
@@ -246,7 +337,7 @@ fn finish_break(
         _ => Vec::new(),
     };
     let shown_ms = (now - active.started).num_milliseconds();
-    fx.push(Effect::Log(break_event(now, active.spec.kind, outcome, shown_ms, results)));
+    fx.push(Effect::Log(break_event(now, active.spec.kind, outcome, shown_ms, active.delayed_by, results)));
     fx.push(Effect::CloseOverlay);
 }
 
@@ -262,7 +353,8 @@ fn break_event(
     kind: BreakKind,
     outcome: Outcome,
     shown_ms: i64,
+    delayed_by: Option<BlockReason>,
     exercises: Vec<ExerciseResult>,
 ) -> Event {
-    Event::Break { ts, kind, phase: Phase::Work, outcome, via: Via::Desktop, shown_ms, exercises }
+    Event::Break { ts, kind, phase: Phase::Work, outcome, delayed_by, via: Via::Desktop, shown_ms, exercises }
 }

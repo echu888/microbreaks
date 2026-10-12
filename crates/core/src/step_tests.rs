@@ -1,7 +1,7 @@
 use chrono::{Duration, NaiveDate, NaiveDateTime, Weekday};
 
 use crate::config::{Config, Exercise, MoveMode};
-use crate::event::{BreakKind, Event, Outcome};
+use crate::event::{BlockReason, BreakKind, Event, Outcome};
 use crate::step::{next_break, status_line, step, Effect, Input, Presence, State};
 
 /// 2026-10-12 is a Monday; days 17 and 18 are Sat/Sun.
@@ -26,8 +26,12 @@ impl Sim {
     }
 
     fn tick(&mut self, now: NaiveDateTime, idle_secs: u64, inputs: &[Input]) {
+        self.tick_with(now, Presence { idle_secs, ..Presence::default() }, inputs);
+    }
+
+    fn tick_with(&mut self, now: NaiveDateTime, presence: Presence, inputs: &[Input]) {
         self.now = Some(now);
-        let fx = step(&mut self.state, &self.cfg, now, Presence { idle_secs }, inputs);
+        let fx = step(&mut self.state, &self.cfg, now, presence, inputs);
         for e in fx {
             match e {
                 Effect::ShowOverlay(spec) => {
@@ -56,6 +60,15 @@ impl Sim {
                 let id = self.last_id;
                 self.tick(t, idle(t), &[Input::BreakDone { id, reps: vec![] }]);
             }
+            t += Duration::seconds(30);
+        }
+    }
+
+    /// Tick every 30 s up to `to` with a fixed presence.
+    fn run_with(&mut self, to: NaiveDateTime, presence: Presence) {
+        let mut t = self.now.unwrap() + Duration::seconds(30);
+        while t <= to {
+            self.tick_with(t, presence, &[]);
             t += Duration::seconds(30);
         }
     }
@@ -198,15 +211,219 @@ fn weekends_have_no_breaks() {
 }
 
 #[test]
-fn a_long_gap_fires_at_most_one_break() {
+fn a_long_gap_logs_every_missed_slot_as_asleep() {
     let mut sim = Sim::new();
-    sim.tick(at(12, 8, 30, 0), 0, &[]);
-    sim.tick(at(12, 12, 10, 0), 0, &[]); // e.g. woke from sleep
-    assert_eq!(sim.shown_times(), ["12 12:10 Move"]);
+    sim.tick(at(12, 11, 30, 0), 0, &[]);
+    sim.tick(at(12, 12, 10, 0), 0, &[]); // woke from sleep
+    assert!(sim.shown.is_empty());
+    assert_eq!(sim.outcomes(), [Outcome::Asleep; 2]);
+    let slots: Vec<_> = sim.events.iter().filter_map(break_slot).collect();
+    assert_eq!(slots, [(at(12, 11, 40, 0), BreakKind::Eye), (at(12, 12, 0, 0), BreakKind::Move)]);
+}
+
+fn break_slot(e: &Event) -> Option<(NaiveDateTime, BreakKind)> {
+    match e {
+        Event::Break { ts, kind, .. } => Some((*ts, *kind)),
+        _ => None,
+    }
+}
+
+fn delays(sim: &Sim) -> Vec<Option<BlockReason>> {
+    sim.events.iter().filter_map(|e| match e {
+        Event::Break { delayed_by, .. } => Some(*delayed_by),
+        _ => None,
+    }).collect()
+}
+
+fn presence(f: impl FnOnce(&mut Presence)) -> Presence {
+    let mut p = Presence::default();
+    f(&mut p);
+    p
 }
 
 #[test]
-fn eye_break_is_dropped_when_away_but_movement_is_shown() {
+fn a_gap_just_over_a_minute_counts_as_sleep_but_a_slow_tick_does_not() {
+    let mut sim = Sim::new();
+    sim.tick(at(12, 9, 58, 0), 0, &[]);
+    sim.tick(at(12, 9, 58, 59), 0, &[]);
+    sim.tick(at(12, 10, 0, 0), 0, &[]); // 61 s gap across :00
+    assert_eq!(sim.outcomes(), [Outcome::Asleep]);
+    let mut sim = Sim::new();
+    sim.tick(at(12, 9, 59, 30), 0, &[]);
+    sim.tick(at(12, 10, 0, 30), 0, &[]); // 60 s: still a slow tick
+    assert_eq!(sim.shown_times(), ["12 10:00 Move"]);
+}
+
+#[test]
+fn movement_break_while_away_is_pending_then_shown_on_return_with_delay_recorded() {
+    let mut sim = Sim::new();
+    sim.tick(at(12, 8, 59, 30), 0, &[]);
+    sim.tick(at(12, 9, 0, 1), 150, &[]);
+    assert!(sim.shown.is_empty());
+    assert!(sim.events.is_empty());
+    sim.tick(at(12, 9, 10, 0), 0, &[]); // back within the 15 min grace
+    assert_eq!(sim.shown_times(), ["12 09:10 Move"]);
+    let id = sim.last_id;
+    sim.tick(at(12, 9, 10, 5), 0, &[Input::BreakDone { id, reps: vec![15] }]);
+    assert_eq!(sim.outcomes(), [Outcome::Done]);
+    assert_eq!(delays(&sim), [Some(BlockReason::Away)]);
+}
+
+#[test]
+fn pending_movement_break_expires_after_the_grace_window() {
+    let mut sim = Sim::new();
+    sim.tick(at(12, 8, 59, 30), 0, &[]);
+    sim.tick(at(12, 9, 0, 1), 150, &[]);
+    sim.tick(at(12, 9, 15, 0), 3000, &[]); // exactly at the limit: still held
+    assert!(sim.events.is_empty());
+    sim.tick(at(12, 9, 15, 30), 0, &[]); // back, but too late
+    assert!(sim.shown.is_empty());
+    assert_eq!(sim.outcomes(), [Outcome::Away]);
+}
+
+#[test]
+fn block_priority_is_locked_then_meeting_then_busy_then_away() {
+    let all = presence(|p| (p.idle_secs, p.locked, p.meeting, p.busy) = (600, true, true, true));
+    let mut sim = Sim::new();
+    sim.cfg.movement.enabled = false;
+    sim.tick(at(12, 8, 19, 30), 0, &[]);
+    sim.run_with(at(12, 8, 21, 0), all);
+    sim.run_with(at(12, 8, 41, 0), Presence { locked: false, ..all });
+    sim.run_with(at(12, 9, 21, 0), Presence { locked: false, meeting: false, ..all });
+    sim.run_with(at(12, 9, 41, 0), Presence { locked: false, meeting: false, busy: false, ..all });
+    assert_eq!(sim.outcomes(), [Outcome::Locked, Outcome::Meeting, Outcome::Busy, Outcome::Away]);
+}
+
+#[test]
+fn meeting_holds_movement_and_drops_eye_breaks() {
+    let call = presence(|p| p.meeting = true);
+    let mut sim = Sim::new();
+    sim.tick(at(12, 8, 19, 30), 0, &[]);
+    sim.run_with(at(12, 9, 4, 0), call);
+    assert!(sim.shown.is_empty());
+    assert_eq!(sim.outcomes(), [Outcome::Meeting, Outcome::Meeting]); // 08:20 and 08:40 eye breaks
+    sim.run_with(at(12, 9, 5, 0), Presence::default()); // call ends
+    assert_eq!(sim.shown_times(), ["12 09:04 Move"]);
+    let id = sim.last_id;
+    sim.tick(at(12, 9, 5, 30), 0, &[Input::BreakDone { id, reps: vec![15] }]);
+    assert_eq!(delays(&sim).last(), Some(&Some(BlockReason::Meeting)));
+}
+
+#[test]
+fn suppression_toggles_disable_meeting_and_busy_blocks() {
+    let mut sim = Sim::new();
+    sim.cfg.suppress.camera_mic = false;
+    sim.cfg.suppress.fullscreen = false;
+    sim.tick(at(12, 8, 19, 30), 0, &[]);
+    sim.run_with(at(12, 8, 21, 0), presence(|p| p.meeting = true));
+    sim.run_with(at(12, 8, 41, 0), presence(|p| p.busy = true));
+    assert_eq!(sim.shown_times(), ["12 08:20 Eye", "12 08:40 Eye"]);
+}
+
+#[test]
+fn a_new_due_break_replaces_a_pending_one() {
+    let away = presence(|p| p.idle_secs = 600);
+    let mut sim = Sim::new();
+    sim.cfg.movement.grace_mins = 60;
+    sim.tick(at(12, 8, 59, 30), 0, &[]);
+    sim.run_with(at(12, 9, 21, 0), away);
+    assert_eq!(sim.outcomes(), [Outcome::Away]); // the 09:20 eye break; the move is still pending
+    sim.run_with(at(12, 10, 1, 0), Presence::default());
+    // Back at 09:21: the pending move is shown, then the 09:40 eye replaces it.
+    assert_eq!(sim.shown_times()[0], "12 09:21 Move");
+    assert!(sim.outcomes().contains(&Outcome::Replaced));
+}
+
+#[test]
+fn a_pending_break_replacing_a_showing_one_closes_its_overlay() {
+    let mut sim = Sim::new();
+    sim.tick(at(12, 8, 39, 30), 0, &[]);
+    sim.run_with(at(12, 8, 41, 0), Presence::default()); // eye shown, unacknowledged
+    sim.run_with(at(12, 9, 1, 0), presence(|p| p.meeting = true)); // move pending
+    assert_eq!(sim.shown_times(), ["12 08:40 Eye"]);
+    assert_eq!(sim.outcomes(), [Outcome::Replaced]);
+    assert_eq!(sim.closed, 1);
+}
+
+#[test]
+fn a_new_due_break_replaces_a_pending_one_without_touching_the_overlay() {
+    let mut sim = Sim::new();
+    sim.cfg.movement.grace_mins = 60;
+    let away = presence(|p| p.idle_secs = 600);
+    sim.tick(at(12, 8, 59, 30), 0, &[]);
+    sim.run_with(at(12, 10, 1, 0), away); // 09:00 move pending; eye breaks dropped; 10:00 move replaces it
+    assert_eq!(sim.closed, 0);
+    assert_eq!(sim.outcomes().iter().filter(|o| **o == Outcome::Replaced).count(), 1);
+}
+
+#[test]
+fn ending_the_day_flushes_a_pending_break_with_its_reason() {
+    let mut sim = Sim::new();
+    sim.tick(at(12, 8, 59, 30), 0, &[]);
+    sim.tick_with(at(12, 9, 0, 1), presence(|p| p.locked = true), &[]);
+    sim.tick(at(12, 9, 2, 0), 0, &[Input::DoneForDay]);
+    assert_eq!(sim.outcomes(), [Outcome::Locked]);
+    assert_eq!(sim.closed, 0);
+}
+
+#[test]
+fn locking_after_work_hours_ends_the_day_at_the_last_input() {
+    let mut sim = Sim::new();
+    sim.tick(at(12, 17, 29, 0), 0, &[]);
+    sim.tick_with(at(12, 17, 30, 0), presence(|p| (p.locked, p.idle_secs) = (true, 4)), &[]);
+    let end = sim.events.iter().find_map(|e| match e {
+        Event::DayEnd { ts, auto } => Some((*ts, *auto)),
+        _ => None,
+    });
+    assert_eq!(end, Some((at(12, 17, 29, 56), true)));
+    // A lock that began before `end` does not end the day at 17:00 (coffee run).
+    let mut sim = Sim::new();
+    sim.tick(at(12, 16, 49, 30), 0, &[]);
+    sim.run_with(at(12, 17, 5, 0), presence(|p| (p.locked, p.idle_secs) = (true, 600))); // locked since 16:55 at the latest
+    assert!(!sim.events.iter().any(|e| matches!(e, Event::DayEnd { .. })));
+    // Locking during work hours does not.
+    let mut sim = Sim::new();
+    sim.tick(at(12, 14, 0, 0), 0, &[]);
+    sim.tick_with(at(12, 14, 0, 30), presence(|p| p.locked = true), &[]);
+    assert!(!sim.events.iter().any(|e| matches!(e, Event::DayEnd { .. })));
+}
+
+#[test]
+fn sleeping_after_work_hours_ends_the_day_at_the_last_tick() {
+    let mut sim = Sim::new();
+    sim.tick(at(12, 18, 0, 0), 0, &[]);
+    sim.tick(at(13, 8, 30, 0), 0, &[]); // lid closed overnight
+    let end = sim.events.iter().find_map(|e| match e {
+        Event::DayEnd { ts, auto } => Some((*ts, *auto)),
+        _ => None,
+    });
+    assert_eq!(end, Some((at(12, 18, 0, 0), true)));
+    // Yesterday's evening slots are not logged; this morning's 08:20 is.
+    let slots: Vec<_> = sim.events.iter().filter_map(break_slot).collect();
+    assert_eq!(slots, [(at(13, 8, 20, 0), BreakKind::Eye)]);
+}
+
+#[test]
+fn sleeping_before_work_end_and_waking_after_it_does_not_end_the_day() {
+    let mut sim = Sim::new();
+    sim.tick(at(12, 16, 50, 0), 0, &[]);
+    sim.tick(at(12, 17, 30, 0), 0, &[]);
+    assert!(!sim.events.iter().any(|e| matches!(e, Event::DayEnd { .. })));
+    assert!(!sim.state.day_ended(at(12, 17, 30, 0).date()));
+}
+
+#[test]
+fn break_events_carry_a_null_delayed_by() {
+    let mut sim = Sim::new();
+    sim.tick(at(12, 8, 19, 30), 0, &[]);
+    sim.tick_with(at(12, 8, 20, 1), presence(|p| p.busy = true), &[]);
+    let json = serde_json::to_value(&sim.events[0]).unwrap();
+    assert_eq!(json["outcome"], "busy");
+    assert!(json["delayed_by"].is_null());
+}
+
+#[test]
+fn eye_break_is_dropped_when_away_but_movement_waits_for_return() {
     let mut sim = Sim::new();
     sim.tick(at(12, 8, 19, 30), 0, &[]);
     sim.tick(at(12, 8, 20, 1), 150, &[]);
@@ -215,7 +432,9 @@ fn eye_break_is_dropped_when_away_but_movement_is_shown() {
     sim.tick(at(12, 8, 40, 1), 150, &[]);
     sim.tick(at(12, 8, 59, 30), 0, &[]);
     sim.tick(at(12, 9, 0, 1), 150, &[]);
-    assert_eq!(sim.shown_times(), ["12 09:00 Move"]);
+    assert!(sim.shown.is_empty());
+    sim.tick(at(12, 9, 1, 0), 0, &[]);
+    assert_eq!(sim.shown_times(), ["12 09:01 Move"]);
 }
 
 #[test]
@@ -251,9 +470,10 @@ fn rotate_mode_cycles_through_exercises() {
     sim.cfg.movement.exercises.push(Exercise { name: "pushups".into(), reps: 10 });
     sim.tick(at(12, 8, 59, 30), 0, &[]);
     for (h, name) in [(9, "squats"), (10, "pushups"), (11, "squats")] {
-        sim.tick(at(12, h, 0, 1), 0, &[]);
+        sim.run_active(at(12, h - 1, 59, 40));
+        sim.tick(at(12, h, 0, 10), 0, &[]);
         let id = sim.last_id;
-        sim.tick(at(12, h, 0, 2), 0, &[Input::BreakDone { id, reps: vec![1] }]);
+        sim.tick(at(12, h, 0, 20), 0, &[Input::BreakDone { id, reps: vec![1] }]);
         let Some(Event::Break { exercises, .. }) = sim.events.last() else { panic!() };
         assert_eq!(exercises.len(), 1);
         assert_eq!(exercises[0].name, name);

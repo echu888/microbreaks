@@ -12,6 +12,7 @@ pub struct Config {
     #[serde(rename = "move")]
     pub movement: Movement,
     pub overlay: Overlay,
+    pub suppress: Suppress,
 }
 
 impl Config {
@@ -118,6 +119,21 @@ pub struct Overlay {
 impl Default for Overlay {
     fn default() -> Self {
         Self { monitors: Monitors::All, opacity: 0.85, input_grace_ms: 1000 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Suppress {
+    pub camera_mic: bool,
+    pub fullscreen: bool,
+    /// Exe names the camera/mic probe skips (read by the Windows probe, not by core).
+    pub ignore_mic_apps: Vec<String>,
+}
+
+impl Default for Suppress {
+    fn default() -> Self {
+        Self { camera_mic: true, fullscreen: true, ignore_mic_apps: Vec::new() }
     }
 }
 
