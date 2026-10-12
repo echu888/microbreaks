@@ -12,7 +12,7 @@ _Last updated: 2026-10-12_
 - [ ] M0 — Skeleton: Tauri 2 project, tray + Quit, autostart, config load. _Tray, status header and Quit verified. Autostart unverified: the config was created by a debug run, so the release build never saw `first_run` and didn't register the Run key._
 - [x] M1 — Core loop (MVP): focus spike first, then scheduler, overlays, day end, event log. _Verified by hand 2026-10-12: focus-stealing works (acts modal), overlay on both monitors, Done gated by countdown, event log written. Movement break / Esc Esc not exercised yet, assumed same path._
 - [ ] M2 — Smart suppression: lock / asleep / camera-mic / fullscreen, pending + grace. _Core + probes written; tick after the manual checks below._
-- [ ] M3 — Phone via ntfy: away buzzer, Off-hours, Going to sleep. _Away buzzer written (core tests + build); phone round trip unverified. Off-hours and Going to sleep not started._
+- [ ] M3 — Phone via ntfy: away buzzer, Off-hours, Going to sleep. _Away buzzer verified on a real phone for Done on a pending break (debug test item, 2026-10-12). Skip, a tap after returning to the PC, and a real idle-triggered push are still unchecked. Off-hours and Going to sleep not started._
 - [ ] M4 — Polish: pause, stats, heads-up toast, settings window
 - [ ] M5 — Distribution: signing, MSIX, Store
 
@@ -53,3 +53,4 @@ _Last updated: 2026-10-12_
 - 2026-10-12: Block-reason toasts: `Effect::Notify`, `[notify]` config (off by default), `tauri-plugin-notification`. 38 core tests pass. Display unverified.
 - 2026-10-12: Verified on a real iPhone that an ntfy `http` action button POSTs to a second topic, which the PC saw. M3 design confirmed.
 - 2026-10-12: M3 away buzzer: `Effect::Push`, phone Done/Skip inputs, clock-seeded break ids, ureq-based ntfy publish and control-topic listener. 47 core tests pass, app builds. Phone round trip unverified.
+- 2026-10-12: Hand-verified the phone round trip: push arrived, Done from the iPhone resolved the pending break (`via: phone`, `delayed_by: away`, reps = targets). The camera was on, so the `meeting` block kept the break pending, which exercised the pending path.
