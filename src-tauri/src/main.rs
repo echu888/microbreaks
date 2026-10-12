@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod engine;
+mod ntfy;
 mod overlay;
 mod win32;
 
@@ -91,6 +92,12 @@ fn main() {
                     engine::tick(app);
                 })
                 .build(app)?;
+
+            if engine.cfg.ntfy.is_ready() {
+                ntfy::spawn_subscriber(app.handle().clone(), engine.cfg.ntfy.clone());
+            } else if engine.cfg.ntfy.enabled {
+                eprintln!("microbreaks: [ntfy] is enabled but needs two different topics (1-64 letters, digits, _ or -)");
+            }
 
             engine.tray_ui = Some(TrayUi { tray, header, day_toggle });
             app.manage(Shared(Mutex::new(engine)));

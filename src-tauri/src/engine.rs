@@ -10,7 +10,7 @@ use tauri::tray::TrayIcon;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_notification::NotificationExt;
 
-use crate::{overlay, win32};
+use crate::{ntfy, overlay, win32};
 
 /// Tray widgets that mirror the status line.
 pub struct TrayUi {
@@ -67,7 +67,12 @@ impl Engine {
         let dir = data_dir();
         let (cfg, first_run) = load_config(&dir);
         let engine = Engine {
-            state: State::default(),
+            // Phone replies carry break ids, so seed them from the clock to stay unique across restarts.
+            state: State::new(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_millis() as u64),
+            ),
             cfg,
             inputs: Vec::new(),
             current: None,
@@ -128,7 +133,7 @@ pub fn tick(app: &AppHandle) {
             match effect {
                 Effect::ShowOverlay(spec) => e.current = Some(spec.clone()),
                 Effect::CloseOverlay => e.current = None,
-                Effect::Notify { .. } => {}
+                Effect::Notify { .. } | Effect::Push { .. } => {}
                 Effect::Log(event) => e.log(event),
             }
         }
@@ -148,6 +153,11 @@ pub fn tick(app: &AppHandle) {
         match effect {
             Effect::ShowOverlay(spec) => overlay::show(app, &cfg, spec.id),
             Effect::CloseOverlay => overlay::close(app),
+            Effect::Push { id, title, message } => {
+                // Off the tick thread: the request can take seconds.
+                let ntfy_cfg = cfg.ntfy.clone();
+                std::thread::spawn(move || ntfy::publish(&ntfy_cfg, id, &title, &message));
+            }
             Effect::Notify { title, body } => {
                 if let Err(e) = app.notification().builder().title(title).body(body).show() {
                     eprintln!("microbreaks: could not show notification: {e}");
