@@ -8,6 +8,7 @@ use microbreaks_core::{status_line, step, BreakSpec, Config, Effect, Event, Inpu
 use tauri::menu::MenuItem;
 use tauri::tray::TrayIcon;
 use tauri::{AppHandle, Manager};
+use tauri_plugin_notification::NotificationExt;
 
 use crate::{overlay, win32};
 
@@ -127,6 +128,7 @@ pub fn tick(app: &AppHandle) {
             match effect {
                 Effect::ShowOverlay(spec) => e.current = Some(spec.clone()),
                 Effect::CloseOverlay => e.current = None,
+                Effect::Notify { .. } => {}
                 Effect::Log(event) => e.log(event),
             }
         }
@@ -146,6 +148,11 @@ pub fn tick(app: &AppHandle) {
         match effect {
             Effect::ShowOverlay(spec) => overlay::show(app, &cfg, spec.id),
             Effect::CloseOverlay => overlay::close(app),
+            Effect::Notify { title, body } => {
+                if let Err(e) = app.notification().builder().title(title).body(body).show() {
+                    eprintln!("microbreaks: could not show notification: {e}");
+                }
+            }
             Effect::Log(_) => {}
         }
     }

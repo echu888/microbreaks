@@ -52,6 +52,7 @@ async fn break_skip(app: AppHandle, id: u64) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![current_break, break_done, break_skip])
         .setup(|app| {
             let (mut engine, first_run) = Engine::load();
