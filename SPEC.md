@@ -109,7 +109,7 @@ Due ──► Blocked? ──no──► Showing ──► done / skipped / repl
 
 | Reason | Detection (Windows) | Eye break | Movement break |
 |---|---|---|---|
-| `away`: idle ≥ 20 s (eye) / ≥ 2 min (move) | `GetLastInputInfo` | logged, dropped (eyes already rested) | pending + **phone push** |
+| `away`: idle ≥ 2 min (eye and move) | `GetLastInputInfo` | logged, dropped (eyes already rested) | pending + **phone push** |
 | `locked` | session lock state / `WTSRegisterSessionNotification` | logged, dropped | pending + **phone push** |
 | `asleep`: PC was asleep at break time | tick gap (see Scheduler) | logged on wake | logged on wake, no push |
 | `meeting`: camera or mic in use | `ConsentStore` registry (below) | logged, dropped | pending, no push |
@@ -255,7 +255,7 @@ overtime_idle_mins = 30
 enabled        = true
 minutes        = [20, 40]      # :00 is covered by the movement break
 duration_secs  = 20
-idle_skip_secs = 20
+idle_skip_secs = 120           # keep high: someone reading without touching input is still at the screen
 
 [move]
 enabled        = true

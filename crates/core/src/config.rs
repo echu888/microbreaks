@@ -54,7 +54,7 @@ pub struct Eye {
 
 impl Default for Eye {
     fn default() -> Self {
-        Self { enabled: true, minutes: vec![20, 40], duration_secs: 20, idle_skip_secs: 20 }
+        Self { enabled: true, minutes: vec![20, 40], duration_secs: 20, idle_skip_secs: 120 }
     }
 }
 

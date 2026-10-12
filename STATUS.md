@@ -9,8 +9,8 @@ _Last updated: 2026-10-12_
 ## Milestones
 
 - [x] Spec (v0.5)
-- [ ] M0 — Skeleton: Tauri 2 project, tray + Quit, autostart, config load. _Builds and launches; tray/autostart unverified._
-- [ ] M1 — Core loop (MVP): focus spike first, then scheduler, overlays, day end, event log. _Builds; overlay and focus-stealing unverified._
+- [ ] M0 — Skeleton: Tauri 2 project, tray + Quit, autostart, config load. _Tray, status header and Quit verified. Autostart unverified: the config was created by a debug run, so the release build never saw `first_run` and didn't register the Run key._
+- [x] M1 — Core loop (MVP): focus spike first, then scheduler, overlays, day end, event log. _Verified by hand 2026-10-12: focus-stealing works (acts modal), overlay on both monitors, Done gated by countdown, event log written. Movement break / Esc Esc not exercised yet, assumed same path._
 - [ ] M2 — Smart suppression: lock / asleep / camera-mic / fullscreen, pending + grace
 - [ ] M3 — Phone via ntfy: away buzzer, Off-hours, Going to sleep
 - [ ] M4 — Polish: pause, stats, heads-up toast, settings window
@@ -18,14 +18,9 @@ _Last updated: 2026-10-12_
 
 ## Next up
 
-1. `cargo install tauri-cli`, or just run `target\debug\microbreaks.exe`.
-2. Verify by hand:
-   - tray icon, status header, Quit;
-   - tray "Test eye break" / "Test movement break" (debug builds only) with another app focused: the overlay must get keyboard focus and `Esc` `Esc` / `Enter` must work (the focus-stealing spike);
-   - overlay on every monitor, with the panel on the cursor's monitor, at mixed DPI;
-   - first-run `%APPDATA%\microbreaks\config.toml` and `events.jsonl`.
-3. Release build: check autostart registers (first run only).
-4. Tick M0 and M1 only after that.
+1. Verify autostart: delete `%APPDATA%\microbreaks\config.toml`, run the release build once, check `HKCU\...\Run` has a `microbreaks` entry. Then tick M0.
+2. Watch the first real movement break (on the hour) in the release build: reps steppers, Done, `exercises` in `events.jsonl`.
+3. Start M2 (smart suppression), core logic first in `crates/core`.
 
 ## Known issues / risks
 
@@ -40,3 +35,5 @@ _Last updated: 2026-10-12_
 
 - 2026-10-12: Spec drafted through v0.5.
 - 2026-10-12: M0 + M1 code written (core scheduler with 20 passing tests, Tauri tray/overlay/event log, plain-JS overlay UI). Builds and launches on Windows; manual verification pending.
+- 2026-10-12: Eye `idle_skip_secs` default 20 → 120 (readers who don't touch input were losing breaks); spec, default config and tests updated, 21 core tests pass.
+- 2026-10-12: Hand-verified tray, focus-stealing overlay, eye-break gating and event log; M1 ticked, M0 waits on autostart.
