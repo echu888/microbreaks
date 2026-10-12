@@ -244,7 +244,7 @@ When enabled, a Windows toast explains why a break didn't happen, so "why didn't
   - Going to sleep
   - Take a break now
   - Open config / settings
-  - Today's stats
+  - Stats
   - Quit
 - Starts on login (on by default).
 
@@ -286,7 +286,7 @@ Events are appended to `%APPDATA%\microbreaks\events.jsonl`. That's about 30 lin
 - `{ "ts", "type": "sleep", "source": "phone"|"tray"|"auto" }`
 - A break's `phase` is the phase it **started** in and does not change if it is flushed or expires later. Gap logs (`asleep`) use each slot's own phase. A break started outside the schedule (a manual "take a break" on a weekend morning, say) logs `offhours`: anything that isn't Work does.
 
-**Today's stats** (tray item, a small window; it refreshes whenever it regains focus):
+**Stats** (tray item, a small window with "Today" and "Last 7 days" tabs; it refreshes whenever it regains focus). **Today:**
 
 - Per break kind: `done` of `due`, plus `skipped`, `missed` and `paused`.
   - `missed` is every outcome where the user never got the break: `away`, `locked`, `asleep`, `meeting`, `busy` and `replaced`.
@@ -296,7 +296,12 @@ Events are appended to `%APPDATA%\microbreaks\events.jsonl`. That's about 30 lin
 - Only events stamped on the local date count, so a bedtime after midnight belongs to the next day. Blank or unreadable lines in the log are skipped.
 - The summary is computed in core (`stats::summarize_day`) from the event lines, so it is unit-tested.
 
-**Later:** a week view with per-day rows and completion rates.
+**Last 7 days** (today and the six days before, newest first):
+
+- One row per day: movement and eye `done/due`, rep completion, and the work-day end.
+- A day with no events at all shows "no data" instead of zeros, so a day the app wasn't running doesn't look like a failure. Weekends are shown like any other day.
+- Totals under the rows use the same counting rules as the day view: `paused` is outside `due`, and reps come only from done breaks.
+- The log is read once and summed in core (`stats::summarize_week`).
 
 ## Configuration
 
