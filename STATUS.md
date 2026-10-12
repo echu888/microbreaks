@@ -13,7 +13,7 @@ _Last updated: 2026-10-12_
 - [x] M1 — Core loop (MVP): focus spike first, then scheduler, overlays, day end, event log. _Verified by hand 2026-10-12: focus-stealing works (acts modal), overlay on both monitors, Done gated by countdown, event log written. Movement break / Esc Esc not exercised yet, assumed same path._
 - [ ] M2 — Smart suppression: lock / asleep / camera-mic / fullscreen, pending + grace. _Core + probes written; tick after the manual checks below._
 - [ ] M3 — Phone via ntfy: away buzzer, Off-hours, Going to sleep. _Away buzzer verified on a real phone with the debug test item (2026-10-12): Done on a pending break, and Skip while the overlay was showing (it closed). The real idle-triggered push is assumed to work (not tested by choice); report if it doesn't. Off-hours phase, Going to sleep (tray, phone button, `quiet_after` backstop) written on branch `m3-offhours` with core tests; **not tried by hand**._
-- [ ] M4 — Polish: pause, stats, heads-up toast, settings window
+- [ ] M4 — Polish: pause, stats, heads-up toast, settings window. _Pause and "Take a break now" written on branch `m4-pause` (core tests pass); not tried by hand. Stats, heads-up toast and settings window not started._
 - [ ] M5 — Distribution: signing, MSIX, Store
 
 ## Next up
@@ -29,6 +29,7 @@ _Last updated: 2026-10-12_
 4. Block-reason toasts are written on branch `block-toasts` (core tests pass, app builds) but the **toast display is unverified**: add `[toasts]` with `enabled = true` to `%APPDATA%\microbreaks\config.toml`, restart the new build, and trigger a meeting/busy hold, then let a pending break expire. Check the toast shows and what app name it uses. The release build now running predates this.
 5. M3 away buzzer is on branch `m3-ntfy`. To verify end to end: fill in `[ntfy]` in `%APPDATA%\microbreaks\config.toml` (`enabled = true`, your two topics), restart a fresh build (stop the running exe first, it locks the file), then sit idle past 2 min across the top of the hour. Expect a phone notification; tap Done and check `events.jsonl` for `"via":"phone"`. Also test Skip, and a tap after returning to the PC (overlay should close).
    Debug builds have a tray item "Test phone push (away)" that triggers the push without waiting for a real idle break. Since you are at the PC, the held break shows its overlay on the next tick (the block has cleared), so a phone Done then closes the overlay; to test the pending path itself, go idle for 2+ min instead.
+7. Verify pause by hand (branch `m4-pause`): tray has "Take a break now" (a movement break), "Pause for 30 min" / "Pause for 1 h" and "End pause" (greyed out unless paused). While paused the status/tooltip reads "Paused until HH:MM", breaks at :20/:40/:00 log `"outcome":"paused"` and show nothing, and they resume by themselves. The old debug "Test movement break" item was replaced by the real "Take a break now".
 6. Verify Off-hours by hand (branch `m3-offhours`, off by default): add `[offhours]` with `enabled = true` to `config.toml`, restart a fresh build, then check:
    - Tray has "Going to sleep"; clicking it after the day ends (or on a weekend after 09:00) logs a `sleep` event with `source: tray`, and no more reminders until morning. It does nothing during work hours.
    - After the work day ends, a movement break fires hourly (`phase: offhours`) until 22:00, then an auto `sleep` event.
@@ -62,3 +63,4 @@ _Last updated: 2026-10-12_
 - 2026-10-12: Hand-verified the phone round trip: push arrived, Done from the iPhone resolved the pending break (`via: phone`, `delayed_by: away`, reps = targets). The camera was on, so the `meeting` block kept the break pending, which exercised the pending path.
 - 2026-10-12: Hand-verified phone Skip closing a showing overlay (`via: phone`, `shown_ms` 6656).
 - 2026-10-12: M3 Off-hours: phase model (Work / Off-hours / Sleep), auto and manual sleep, wake boundaries, phase on break events, sleep events, tray item, phone "Going to sleep" button. 62 core tests pass, app compiles (debug exe was running, so not relinked). Unverified by hand.
+- 2026-10-12: PR #4 merged (M2 + M3). M4 started: pause (30 min / 1 h / end early, `paused` outcome, `pause` events) and a real "Take a break now" tray item. 69 core tests pass, app compiles (release exe was running, not relinked). Unverified by hand.

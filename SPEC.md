@@ -39,7 +39,11 @@ Primary target is **Windows**.
 - **Off-hours is opt-in** (`offhours.enabled`, off by default). With it off, nothing runs after the work day or on weekends, and no `sleep` events are written automatically.
 - **Exact schedule.** Off-hours breaks fire at `:00` only, after the phase starts and before `quiet_after` (the start itself does not fire, like 08:00 on a work day, so a Saturday's first break is 10:00 with the default `weekend_start`). Eye breaks fire at the eye minutes only if `offhours.eye` is on. On a work day the phase starts at `day_end`, even a manual early "Done for the day".
 - **Two kinds of sleep.** The user's **Sleep phase** (this section, event type `sleep`) is unrelated to the PC sleeping, which only produces `asleep` break outcomes.
-- **Pause** is a temporary overlay on any phase (tray "Pause for 30 min / 1 h"). It resumes automatically.
+- **Pause** is a temporary overlay on any phase (tray "Pause for 30 min / 1 h"). It resumes automatically, or early via "End pause".
+  - Every break that comes due while paused is dropped and logged `paused`: nothing is shown, held as pending, or pushed to the phone. A new pause replaces a running one.
+  - Starting a pause dismisses a showing break (logged `skipped`) and leaves a pending one logged with its block reason, like ending the day.
+  - "Take a break now" still works while paused. Day end, sleep and the phone buttons are unaffected.
+  - The status line reads "Paused until 10:35 · next: ...", where the next break is the first one after the pause ends.
 
 ### Phase vs. presence
 
@@ -271,12 +275,14 @@ Events are appended to `%APPDATA%\microbreaks\events.jsonl`. That's about 30 lin
 | `asleep` | PC was asleep |
 | `meeting` | camera/mic in use; never resolved |
 | `busy` | fullscreen/presentation; never resolved |
+| `paused` | the user had paused |
 | `replaced` | still pending or showing when the next break came due |
 
 **Day events:**
 
 - `{ "ts", "type": "day_end", "auto": bool }`, where `ts` is the real shutdown time.
 - `{ "ts", "type": "day_resume" }`
+- `{ "ts", "type": "pause", "until" }`, and `{ "ts", "type": "pause_end" }` only when a pause is ended early (a natural expiry logs nothing).
 - `{ "ts", "type": "sleep", "source": "phone"|"tray"|"auto" }`
 - A break's `phase` is the phase it **started** in and does not change if it is flushed or expires later. Gap logs (`asleep`) use each slot's own phase. A break started outside the schedule (a manual "take a break" on a weekend morning, say) logs `offhours`: anything that isn't Work does.
 
