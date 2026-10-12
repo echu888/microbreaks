@@ -206,7 +206,7 @@ When enabled, a Windows toast explains why a break didn't happen, so "why didn't
   - `control`: phone → desktop. The desktop keeps a streaming subscription (`GET /<topic>/json`).
 - **Action buttons:** notifications carry ntfy `http` action buttons that publish to the control topic: **Done**, **Skip**, and in Off-hours **Going to sleep**.
   - The desktop receives these and resolves the pending break (logged `via: "phone"`; reps = target) or enters the Sleep phase.
-  - *Verify early in M3 that the iOS ntfy app supports `http` actions.* Fallback: a `view` action opening a tiny local-network page, or notifications without buttons plus the tray / `quiet_after` for sleep.
+  - *Verified 2026-10-12: the iOS ntfy app runs `http` actions; the phone POSTs the action's `url` and `body` itself.* Fallback, if that ever stops working: a `view` action opening a tiny local-network page, or notifications without buttons plus the tray / `quiet_after` for sleep.
 - **Security:** anyone who learns the topic names could send fake Done/Sleep messages. That's acceptable for a personal tool. A reserved, password-protected topic (ntfy Pro or self-hosted) is the upgrade path.
 
 ## Tray
@@ -376,7 +376,7 @@ Current progress is tracked in [STATUS.md](STATUS.md).
 4. **M3 — Phone via ntfy:**
    - Away buzzer with Done/Skip actions.
    - Off-hours phase (weekday evenings + weekends) and Going to sleep.
-   - First, verify iOS `http` actions.
+   - iOS `http` actions are verified.
 5. **M4 — Polish:**
    - Pause and "take a break now".
    - Today's stats.

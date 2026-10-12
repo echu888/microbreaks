@@ -27,13 +27,13 @@ _Last updated: 2026-10-12_
    - **Asleep:** sleep the PC across a slot; events show `asleep` at the slot times.
    - **Day end on lock/sleep:** after 17:00, lock the PC and check for an auto `day_end` at the last input time.
 4. Block-reason toasts are written on branch `block-toasts` (core tests pass, app builds) but the **toast display is unverified**: add `[notify]` with `enabled = true` to `%APPDATA%\microbreaks\config.toml`, restart the new build, and trigger a meeting/busy hold, then let a pending break expire. Check the toast shows and what app name it uses. The release build now running predates this.
-5. Start M3 (phone via ntfy). First verify iOS ntfy `http` actions.
+5. M3 (phone via ntfy), on branch `m3-ntfy`. The iOS `http` action check is done; start with the core logic (Off-hours phase, push effects, Done/Skip/Sleep inputs), then the HTTP client and control-topic subscription.
 
 ## Known issues / risks
 
 - **Build environment (this machine):** build from `C:\work\microbreaks` (ThreatLocker blocked unsigned build-script exes elsewhere). Cargo picks the Enterprise VS 18 instance, which has no libs, so load the Build Tools env first: run `vcvars64.bat` from `C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build` (or use its Developer PowerShell). Git Bash's coreutils `link` shadows MSVC's `link.exe`; use PowerShell.
 - Windows foreground lock may stop the overlay from taking focus (see SPEC → The break overlay). `win32::force_foreground` tries `AttachThreadInput`, then a synthetic Alt press.
-- Not yet verified whether the iOS ntfy app supports `http` action buttons (needed in M3).
+- ntfy: the `http` action button works on iOS (verified 2026-10-12). Tapping it makes the phone POST to the control topic, which the desktop watches. No fallback needed.
 - Overlay, tray and Win32 probes can only be tested on Windows. Cloud/Linux sessions can only test `crates/core`.
 - Remaining gaps: no config reload, no single-instance guard, one tray icon for all states (no pending badge yet), no phone push for away/locked pending breaks (M3).
 - The camera/mic registry scan runs every 2 s tick. Fine for now; probe only when a break is due if it ever matters.
@@ -48,3 +48,4 @@ _Last updated: 2026-10-12_
 - 2026-10-12: Hand-verified tray, focus-stealing overlay, eye-break gating and event log; M1 ticked, M0 waits on autostart.
 - 2026-10-12: M2 written: `Presence` snapshot, block priority, pending/grace for movement breaks, asleep via tick gap, `delayed_by`, lock/sleep day end, Win32 probes for lock, camera/mic and busy. 35 core tests pass, app builds. Probes await manual verification.
 - 2026-10-12: Block-reason toasts: `Effect::Notify`, `[notify]` config (off by default), `tauri-plugin-notification`. 38 core tests pass. Display unverified.
+- 2026-10-12: Verified on a real iPhone that an ntfy `http` action button POSTs to a second topic, which the PC saw. M3 design confirmed.
