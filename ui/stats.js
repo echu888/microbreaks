@@ -1,5 +1,6 @@
 const { invoke } = window.__TAURI__.core;
 const app = document.getElementById("app");
+let view = "today"; // "today" | "week"
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -11,6 +12,21 @@ function el(tag, className, text) {
 // "2026-10-12T17:10:00" -> "17:10"
 const hhmm = (iso) => iso.slice(11, 16);
 const percent = (part, whole) => (whole ? Math.round((100 * part) / whole) + "%" : "-");
+const sum = (exercises, key) => exercises.reduce((n, e) => n + e[key], 0);
+const dayLabel = (date, options) => new Date(date + "T00:00:00").toLocaleDateString(undefined, options);
+
+function tabs() {
+  const bar = el("div", "tabs");
+  for (const [id, label] of [["today", "Today"], ["week", "Last 7 days"]]) {
+    const tab = el("button", id === view ? "tab active" : "tab", label);
+    tab.addEventListener("click", () => {
+      view = id;
+      load();
+    });
+    bar.append(tab);
+  }
+  return bar;
+}
 
 function breakSection(title, k) {
   const section = el("div");
@@ -53,10 +69,10 @@ function daySection(s) {
   return section;
 }
 
-function render(s) {
-  const day = new Date(s.date + "T00:00:00");
-  const heading = day.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+function renderToday(s) {
+  const heading = dayLabel(s.date, { weekday: "long", month: "short", day: "numeric" });
   app.replaceChildren(
+    tabs(),
     el("h1", null, heading),
     breakSection("Movement breaks", s.movement),
     breakSection("Eye breaks", s.eye),
@@ -65,8 +81,51 @@ function render(s) {
   );
 }
 
+const ratio = (k) => (k.due ? `${k.done}/${k.due}` : "-");
+
+function weekRow(d) {
+  const row = el("div", "week-row");
+  row.append(el("span", null, dayLabel(d.date, { weekday: "short", month: "short", day: "numeric" })));
+  if (!d.has_data) {
+    row.classList.add("empty");
+    row.append(el("span", "span-all", "no data"));
+    return row;
+  }
+  const reps = percent(sum(d.exercises, "reps"), sum(d.exercises, "target"));
+  row.append(
+    el("span", null, ratio(d.movement)),
+    el("span", null, ratio(d.eye)),
+    el("span", null, d.exercises.length ? reps : "-"),
+    el("span", null, d.day_end ? hhmm(d.day_end) : "-"),
+  );
+  return row;
+}
+
+function weekSummaryLine(label, text) {
+  const line = el("div", "line");
+  line.append(el("span", null, label), el("span", null, text));
+  return line;
+}
+
+function renderWeek(w) {
+  const header = el("div", "week-row week-head");
+  for (const label of ["Day", "Move", "Eye", "Reps", "Ended"]) header.append(el("span", null, label));
+
+  const summary = el("div");
+  summary.append(el("h2", null, "Week"));
+  const kindText = (k) => `${k.done} of ${k.due} done (${percent(k.done, k.due)})`;
+  summary.append(weekSummaryLine("Movement breaks", kindText(w.movement)));
+  summary.append(weekSummaryLine("Eye breaks", kindText(w.eye)));
+  const reps = sum(w.exercises, "reps");
+  const target = sum(w.exercises, "target");
+  summary.append(weekSummaryLine("Reps", target ? `${reps} / ${target} (${percent(reps, target)})` : "-"));
+
+  app.replaceChildren(tabs(), el("h1", null, "Last 7 days"), header, ...w.days.map(weekRow), summary);
+}
+
 async function load() {
-  render(await invoke("day_stats"));
+  if (view === "week") renderWeek(await invoke("week_stats"));
+  else renderToday(await invoke("day_stats"));
 }
 
 // Fresh numbers every time the window comes back to the front.

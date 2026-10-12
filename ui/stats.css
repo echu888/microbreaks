@@ -44,3 +44,43 @@ h2 {
   color: #9a9aa6;
   font-size: 14px;
 }
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.tab {
+  padding: 5px 14px;
+  border: 1px solid #3a3a44;
+  border-radius: 8px;
+  background: transparent;
+  color: #c8c8d0;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.tab.active {
+  background: #3a3a48;
+  color: #f2f2f2;
+}
+.week-row {
+  display: grid;
+  grid-template-columns: 1.6fr 0.8fr 0.8fr 0.8fr 0.8fr;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.week-head {
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #9a9aa6;
+  border-bottom: 1px solid #3a3a44;
+}
+.week-row.empty {
+  color: #6a6a76;
+}
+.span-all {
+  grid-column: span 4;
+}

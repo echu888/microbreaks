@@ -9,7 +9,7 @@ mod win32;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use microbreaks_core::stats::DayStats;
+use microbreaks_core::stats::{DayStats, WeekStats};
 use microbreaks_core::{BlockReason, BreakKind, BreakSpec, Input};
 use serde::Serialize;
 use tauri::menu::{MenuBuilder, MenuItem};
@@ -46,6 +46,11 @@ fn day_stats(shared: State<Shared>) -> DayStats {
 }
 
 #[tauri::command]
+fn week_stats(shared: State<Shared>) -> WeekStats {
+    shared.0.lock().unwrap().week_stats(chrono::Local::now().date_naive())
+}
+
+#[tauri::command]
 async fn break_done(app: AppHandle, id: u64, reps: Vec<u32>) {
     engine::push(&app, Input::BreakDone { id, reps });
     engine::tick(&app);
@@ -61,7 +66,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![current_break, break_done, break_skip, day_stats])
+        .invoke_handler(tauri::generate_handler![current_break, break_done, break_skip, day_stats, week_stats])
         .setup(|app| {
             let (mut engine, first_run) = Engine::load();
             let status = engine.status(chrono::Local::now().naive_local());
@@ -79,7 +84,7 @@ fn main() {
             let pause_30 = MenuItem::with_id(app, "pause_30", "Pause for 30 min", true, None::<&str>)?;
             let pause_60 = MenuItem::with_id(app, "pause_60", "Pause for 1 h", true, None::<&str>)?;
             let end_pause = MenuItem::with_id(app, "end_pause", "End pause", false, None::<&str>)?;
-            let stats = MenuItem::with_id(app, "stats", "Today's stats", true, None::<&str>)?;
+            let stats = MenuItem::with_id(app, "stats", "Stats", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let mut menu = MenuBuilder::new(app)
                 .item(&header)

@@ -13,8 +13,8 @@ pub fn open(app: &AppHandle) {
             return;
         }
         let built = WebviewWindowBuilder::new(&app, LABEL, WebviewUrl::App("stats.html".into()))
-            .title("Today's stats")
-            .inner_size(420.0, 560.0)
+            .title("Stats")
+            .inner_size(480.0, 600.0)
             .resizable(false)
             .center()
             .build();

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use microbreaks_core::config::DEFAULT_CONFIG_TOML;
-use microbreaks_core::stats::{summarize_day, DayStats};
+use microbreaks_core::stats::{summarize_day, summarize_week, DayStats, WeekStats};
 use microbreaks_core::{status_line, step, BreakSpec, Config, Effect, Event, Input, Presence, State};
 use tauri::menu::MenuItem;
 use tauri::tray::TrayIcon;
@@ -94,6 +94,12 @@ impl Engine {
     pub fn day_stats(&self, today: chrono::NaiveDate) -> DayStats {
         let text = fs::read_to_string(&self.events_path).unwrap_or_default();
         summarize_day(text.lines(), today)
+    }
+
+    /// The last seven days ending today.
+    pub fn week_stats(&self, today: chrono::NaiveDate) -> WeekStats {
+        let text = fs::read_to_string(&self.events_path).unwrap_or_default();
+        summarize_week(text.lines(), today)
     }
 
     fn log(&self, event: &Event) {
