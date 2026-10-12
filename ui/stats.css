@@ -1,0 +1,46 @@
+html,
+body {
+  margin: 0;
+  background: #1e1e24;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  color: #f2f2f2;
+  user-select: none;
+}
+#app {
+  padding: 20px 28px 28px;
+}
+h1 {
+  margin: 0 0 16px;
+  font-size: 22px;
+  font-weight: 600;
+}
+h2 {
+  margin: 20px 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #9a9aa6;
+}
+.big {
+  font-size: 28px;
+  font-variant-numeric: tabular-nums;
+}
+.counts {
+  display: flex;
+  gap: 16px;
+  margin-top: 2px;
+  font-size: 14px;
+  color: #c8c8d0;
+}
+.line {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 0;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.muted {
+  color: #9a9aa6;
+  font-size: 14px;
+}

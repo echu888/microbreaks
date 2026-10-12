@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Overlay windows",
-  "windows": ["overlay-*"],
+  "description": "Overlay and stats windows",
+  "windows": ["overlay-*", "stats"],
   "permissions": ["core:default"]
 }

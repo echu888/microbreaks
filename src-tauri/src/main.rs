@@ -3,11 +3,13 @@
 mod engine;
 mod ntfy;
 mod overlay;
+mod stats_window;
 mod win32;
 
 use std::sync::Mutex;
 use std::time::Duration;
 
+use microbreaks_core::stats::DayStats;
 use microbreaks_core::{BlockReason, BreakKind, BreakSpec, Input};
 use serde::Serialize;
 use tauri::menu::{MenuBuilder, MenuItem};
@@ -39,6 +41,11 @@ fn current_break(window: WebviewWindow, shared: State<Shared>) -> Option<BreakVi
 }
 
 #[tauri::command]
+fn day_stats(shared: State<Shared>) -> DayStats {
+    shared.0.lock().unwrap().day_stats(chrono::Local::now().date_naive())
+}
+
+#[tauri::command]
 async fn break_done(app: AppHandle, id: u64, reps: Vec<u32>) {
     engine::push(&app, Input::BreakDone { id, reps });
     engine::tick(&app);
@@ -54,7 +61,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![current_break, break_done, break_skip])
+        .invoke_handler(tauri::generate_handler![current_break, break_done, break_skip, day_stats])
         .setup(|app| {
             let (mut engine, first_run) = Engine::load();
             let status = engine.status(chrono::Local::now().naive_local());
@@ -72,6 +79,7 @@ fn main() {
             let pause_30 = MenuItem::with_id(app, "pause_30", "Pause for 30 min", true, None::<&str>)?;
             let pause_60 = MenuItem::with_id(app, "pause_60", "Pause for 1 h", true, None::<&str>)?;
             let end_pause = MenuItem::with_id(app, "end_pause", "End pause", false, None::<&str>)?;
+            let stats = MenuItem::with_id(app, "stats", "Today's stats", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let mut menu = MenuBuilder::new(app)
                 .item(&header)
@@ -82,7 +90,9 @@ fn main() {
                 .item(&end_pause)
                 .separator()
                 .item(&day_toggle)
-                .item(&sleep);
+                .item(&sleep)
+                .separator()
+                .item(&stats);
             // Debug builds only: trigger breaks on demand (also the focus-stealing spike).
             let test_eye = MenuItem::with_id(app, "test_eye", "Test eye break", true, None::<&str>)?;
             let test_phone = MenuItem::with_id(app, "test_phone", "Test phone push (away)", true, None::<&str>)?;
@@ -105,6 +115,7 @@ fn main() {
                         "pause_60" => engine::push(app, Input::Pause { mins: 60 }),
                         "end_pause" => engine::push(app, Input::EndPause),
                         "test_phone" => engine::push(app, Input::TakeHeldBreak(BlockReason::Away)),
+                        "stats" => return stats_window::open(app),
                         "quit" => return app.exit(0),
                         _ => return,
                     }

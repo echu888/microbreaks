@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use microbreaks_core::config::DEFAULT_CONFIG_TOML;
+use microbreaks_core::stats::{summarize_day, DayStats};
 use microbreaks_core::{status_line, step, BreakSpec, Config, Effect, Event, Input, Presence, State};
 use tauri::menu::MenuItem;
 use tauri::tray::TrayIcon;
@@ -87,6 +88,12 @@ impl Engine {
 
     pub fn status(&self, now: chrono::NaiveDateTime) -> String {
         status_line(&self.state, &self.cfg, now)
+    }
+
+    /// Today's totals, read from the event log (a missing log counts as an empty day).
+    pub fn day_stats(&self, today: chrono::NaiveDate) -> DayStats {
+        let text = fs::read_to_string(&self.events_path).unwrap_or_default();
+        summarize_day(text.lines(), today)
     }
 
     fn log(&self, event: &Event) {
